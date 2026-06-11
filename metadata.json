@@ -1,0 +1,5 @@
+{
+  "name": "Store Management System",
+  "description": "A secure full-stack role-based management system for tracking material imports, sales, company expenses, and financial performance metrics.",
+  "requestFramePermissions": []
+}
