@@ -3,10 +3,12 @@ import bcrypt from 'bcryptjs';
 import path from 'path';
 import fs from 'fs';
 
-// Initialize Sequelize with SQLite database stored in the project root
+// Initialize Sequelize with SQLite database stored in the project root (or /tmp on Vercel)
+const dbFilename = process.env.VERCEL ? '/tmp/database.sqlite' : path.join(process.cwd(), 'database.sqlite');
+
 export const sequelize = new Sequelize({
   dialect: 'sqlite',
-  storage: path.join(process.cwd(), 'database.sqlite'),
+  storage: dbFilename,
   logging: false, // Turn off query logs in console for readable output
   dialectOptions: {
     // Wait up to 10 seconds for locks to clear before throwing SQLITE_BUSY
@@ -334,9 +336,11 @@ export async function initDatabase() {
     if (isCorrupt) {
       console.warn('⚠️ SQLite database file is corrupt! Attempting automatic recovery...');
       try {
-        const dbPath = path.join(process.cwd(), 'database.sqlite');
+        const dbPath = process.env.VERCEL ? '/tmp/database.sqlite' : path.join(process.cwd(), 'database.sqlite');
         if (fs.existsSync(dbPath)) {
-          const backupPath = path.join(process.cwd(), `database.sqlite.corrupt-${Date.now()}`);
+          const backupPath = process.env.VERCEL 
+            ? `/tmp/database.sqlite.corrupt-${Date.now()}` 
+            : path.join(process.cwd(), `database.sqlite.corrupt-${Date.now()}`);
           fs.renameSync(dbPath, backupPath);
           console.log(`Successfully backed up corrupt database to: ${backupPath}`);
         }
@@ -362,7 +366,7 @@ export async function initDatabase() {
     await User.create({
       name: 'Super Admin',
       email: 'admin@admin123',
-      passwordHash: bcrypt.hashSync('admin123321', saltRounds),
+      passwordHash: bcrypt.hashSync('admin123', saltRounds),
       role: 'Admin',
       status: 'active',
     });
