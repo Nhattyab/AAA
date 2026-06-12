@@ -187,17 +187,28 @@ export default function App() {
         body: JSON.stringify({ email: loginEmail, password: loginPassword }),
       });
 
-      if (res.ok) {
-        const data = await res.json();
-        setUser(data.user);
-        setLoginEmail('');
-        setLoginPassword('');
+   if (res.ok) {
+        const contentType = res.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          const data = await res.json();
+          setUser(data.user);
+          setLoginEmail('');
+          setLoginPassword('');
+        } else {
+          setLoginError('Expected JSON response but received non-JSON from server.');
+        }
       } else {
-        const data = await res.json();
-        setLoginError(data.error || 'Authentication failed. Incorrect email or password.');
+        const contentType = res.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          const data = await res.json();
+          setLoginError(data.error || `Authentication failed with status ${res.status}.`);
+        } else {
+          const errorText = await res.text();
+          setLoginError(`Server Error (${res.status}): ${errorText.substring(0, 100)}...`);
+        }
       }
-    } catch (err) {
-      setLoginError('Could not contact full-stack auth controllers.');
+    } catch (err: any) {
+      setLoginError(`Network Error: Could not connect to API server. Details: ${err?.message || err}`);
     } finally {
       setAuthLoading(false);
     }
