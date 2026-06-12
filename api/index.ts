@@ -1,7 +1,10 @@
 import express from 'express';
 import cookieParser from 'cookie-parser';
+import sqlite3 from 'sqlite3';
 import { initDatabase } from '../server/db.js';
 import { routes } from '../server/routes.js';
+
+console.log('[Vercel Serverless] Traced sqlite3 module support:', typeof sqlite3);
 
 const app = express();
 
