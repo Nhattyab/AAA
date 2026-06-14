@@ -1010,7 +1010,7 @@ export default function App() {
             <div className="bg-indigo-600 p-2 rounded-lg" id="logo-badge">
               <Building2 className="w-6 h-6 text-white" />
             </div>
-            <span className="text-xl font-bold tracking-tight text-white font-mono">AAA IMPORTS</span>
+            <span className="text-xl font-bold tracking-tight text-white font-mono">Alexander IMPORT & Export</span>
           </div>
           
           <div className="my-12 md:my-0" id="promotional-context">
@@ -1113,7 +1113,7 @@ export default function App() {
           <div className="bg-indigo-600 p-1.5 rounded-md" id="badge-icon-nav">
             <Building2 className="w-5 h-5 text-white" />
           </div>
-          <span className="font-bold font-mono tracking-tight text-white text-base">AAA IMPORTS</span>
+          <span className="font-bold font-mono tracking-tight text-white text-base">Alexander IMPORT & Export</span>
           <span className="text-xs text-slate-400 font-mono hidden sm:inline px-2 py-0.5 bg-slate-800 rounded">v1.1</span>
         </div>
 
