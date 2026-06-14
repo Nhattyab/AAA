@@ -367,101 +367,11 @@ export async function initDatabase() {
     
     // Create Admin
     await User.create({
-      name: 'Natey Admin',
-      email: 'admin@company.com',
-      passwordHash: bcrypt.hashSync('admin123', saltRounds),
+      name: 'Super Admin',
+      email: 'admin@admin123',
+      passwordHash: bcrypt.hashSync('admin123321', saltRounds),
       role: 'Admin',
       status: 'active',
-    });
-
-    // Create Finance Guy
-    await User.create({
-      name: 'Felix Finance',
-      email: 'finance@company.com',
-      passwordHash: bcrypt.hashSync('finance123', saltRounds),
-      role: 'Finance',
-      status: 'active',
-    });
-
-    // Create Sellers
-    await User.create({
-      name: 'Sam Seller',
-      email: 'seller@company.com',
-      passwordHash: bcrypt.hashSync('seller123', saltRounds),
-      role: 'Seller',
-      status: 'active',
-    });
-
-    await User.create({
-      name: 'Silvia Sales',
-      email: 'silvia@company.com',
-      passwordHash: bcrypt.hashSync('seller123', saltRounds),
-      role: 'Seller',
-      status: 'active',
-    });
-
-    // Seed some initial materials (inventory)
-    const rawCopper = await Material.create({
-      name: 'Copper Wire Coils',
-      sku: 'COP-WRE-001',
-      quantity: 500,
-      costPrice: 4.5,
-      supplier: 'Santiago Copper S.A.',
-      importDate: '2026-05-15',
-    });
-
-    const steelSheets = await Material.create({
-      name: 'Industrial Steel Sheets',
-      sku: 'STL-SHT-502',
-      quantity: 250,
-      costPrice: 12.0,
-      supplier: 'Steel Corp India',
-      importDate: '2026-05-20',
-    });
-
-    const solarPanels = await Material.create({
-      name: 'Monocrystalline Solar Modules',
-      sku: 'SLR-PAN-109',
-      quantity: 120,
-      costPrice: 75.0,
-      supplier: 'Guangdong Solar Tech',
-      importDate: '2026-06-01',
-    });
-
-    // Seed some Sales
-    await Sale.create({
-      sellerId: 3, // Sam Seller
-      customerName: 'Global Grid Corp',
-      materialId: rawCopper.id,
-      quantity: 30,
-      totalAmount: 240.0, // Selling at 8.0 per unit (profit generated: 8.0 - 4.5 = 3.5 per unit)
-      paymentMethod: 'Transfer',
-      date: '2026-06-02',
-    });
-
-    await Sale.create({
-      sellerId: 4, // Silvia Sales
-      customerName: 'Smarter Energy Ltd',
-      materialId: solarPanels.id,
-      quantity: 10,
-      totalAmount: 1100.0, // Selling at 110.0 per unit (cost was 75.0)
-      paymentMethod: 'Transfer',
-      date: '2026-06-03',
-    });
-
-    // Seed some Expenses
-    await Expense.create({
-      category: 'Warehouse Electricity',
-      amount: 450.0,
-      date: '2026-06-01',
-      loggedById: 2, // Felix Finance
-    });
-
-    await Expense.create({
-      category: 'Customs Declaration Fee',
-      amount: 600.0,
-      date: '2026-06-02',
-      loggedById: 2, // Felix Finance
     });
   }
 }

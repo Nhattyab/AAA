@@ -1020,7 +1020,7 @@ export default function App() {
           </div>
 
           <div className="text-xs text-slate-500 font-mono" id="current-timestamp">
-            SYSTEM Developed by <a href="#">Natnael Eyob</a>
+            SYSTEM Developed by <a href="t.me/abityazz">Natnael Eyob</a>
           </div>
         </div>
 
