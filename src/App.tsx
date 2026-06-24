@@ -1367,7 +1367,7 @@ export default function App() {
         `$${seller.profitContribution.toLocaleString('en-US', { minimumFractionDigits: 2 })}`
       ]);
 
-      printData(`Company Financial Performance Balance & Seller Performance`, headers, rows, summarySectionHTML);
+      printData(`Company Financial Report`, headers, rows, summarySectionHTML);
       setApiSuccess('System print requested for Consolidated Balance Sheets.');
     }
   };
@@ -1402,7 +1402,7 @@ export default function App() {
           </div>
 
           <div className="text-xs text-slate-500 font-mono" id="current-timestamp">
-            SYSTEM Developed BY : <a href="t.me/Abityazz">Natnael Eyob</a>
+            SYSTEM DEVELOPED BY : <a href="https://t.me/Abityazz" className="text-[#b3b302]">Natnael Eyob</a>
           </div>
         </div>
 
