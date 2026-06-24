@@ -34,9 +34,10 @@ export interface SaleItem {
   materialSku?: string | null;
   quantity: number;
   totalAmount: number;
-  paymentMethod: 'Cash' | 'Transfer';
+  paymentMethod: 'Cash' | 'Transfer' | 'Loan' | 'Paid Loan';
   transferBank?: string | null;
   date: string;
+  repaidAmount?: number;
   seller?: {
     id: number;
     name: string;
@@ -62,6 +63,14 @@ export interface ExpenseItem {
   };
 }
 
+export interface CompanyLoanItem {
+  id: number;
+  lender: string;
+  amount: number;
+  repaidAmount: number;
+  date: string;
+}
+
 export interface MasterReport {
   revenue: number;
   cogs: number;
@@ -69,6 +78,8 @@ export interface MasterReport {
   companyExpenses: number;
   netProfit: number;
   inventoryAssetValue: number;
+  outstandingLoans: number;
+  outstandingCompanyLoans: number;
 }
 
 export interface SellerPerformance {

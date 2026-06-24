@@ -155,8 +155,8 @@ export function printData(title: string, headers: string[], rows: string[][], su
     <body>
       <div class="header">
         <div>
-          <div class="company-name">AAA Import &amp; Export</div>
-          <div class="subtitle">Store &amp; Sales management System  &bull; Store registry</div>
+          <div class="company-name">Alexander Import &amp; Export</div>
+          <div class="subtitle">Store &amp; Sales management System</div>
           <div class="document-title">${title}</div>
         </div>
         <div class="meta-info">
@@ -178,7 +178,7 @@ export function printData(title: string, headers: string[], rows: string[][], su
       </table>
       
       <div class="footer">
-        <div>&copy; 2026 AAA Import &amp; Export. Confidential Company Record.</div>
+        <div>&copy; 2026 Alexander Import &amp; Export. Confidential Company Record.</div>
         <div>Page 1 of 1</div>
       </div>
       

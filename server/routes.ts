@@ -1,6 +1,6 @@
 import { Router, Response } from 'express';
 import bcrypt from 'bcryptjs';
-import { User, Material, Sale, Expense, sequelize } from './db.js';
+import { User, Material, Sale, Expense, CompanyLoan, sequelize } from './db.js';
 import { authenticateJWT, requireRole, generateToken, COOKIE_OPTIONS, AuthenticatedRequest } from './auth.js';
 
 export const routes = Router();
@@ -188,21 +188,36 @@ routes.delete('/api/admin/users/:id', authenticateJWT, requireRole(['Admin']), a
 // 3. MATERIAL INVENTORY ROUTES (Admin & Finance)
 // ==========================================
 
-routes.get('/api/inventory', authenticateJWT, requireRole(['Admin', 'Finance', 'Seller']), async (req, res) => {
+routes.get('/api/inventory', authenticateJWT, requireRole(['Admin', 'Finance', 'Seller']), async (req: AuthenticatedRequest, res) => {
   try {
     const materials = await Material.findAll({
       order: [['name', 'ASC']],
     });
+    
+    // If the requesting user is not an Admin, we map the materials to hide costPrice (set to 0) to prevent unauthorized viewing via network inspectors
+    if (req.user?.role !== 'Admin') {
+      const masked = materials.map(m => {
+        const plain = m.get({ plain: true });
+        plain.costPrice = 0;
+        return plain;
+      });
+      res.json(masked);
+      return;
+    }
+
     res.json(materials);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
 });
 
-routes.post('/api/inventory', authenticateJWT, requireRole(['Admin', 'Finance']), async (req, res) => {
+routes.post('/api/inventory', authenticateJWT, requireRole(['Admin', 'Finance']), async (req: AuthenticatedRequest, res) => {
   const { name, sku, quantity, costPrice, supplier, importDate } = req.body;
 
-  if (!name || !sku || quantity === undefined || costPrice === undefined || !supplier || !importDate) {
+  const isAdmin = req.user?.role === 'Admin';
+  const finalCostPrice = isAdmin ? Number(costPrice) : 0;
+
+  if (!name || !sku || quantity === undefined || (isAdmin && costPrice === undefined) || !supplier || !importDate) {
     res.status(400).json({ error: 'All material fields are required.' });
     return;
   }
@@ -218,7 +233,7 @@ routes.post('/api/inventory', authenticateJWT, requireRole(['Admin', 'Finance'])
       name,
       sku,
       quantity: Number(quantity),
-      costPrice: Number(costPrice),
+      costPrice: finalCostPrice,
       supplier,
       importDate,
     });
@@ -229,7 +244,7 @@ routes.post('/api/inventory', authenticateJWT, requireRole(['Admin', 'Finance'])
   }
 });
 
-routes.put('/api/inventory/:id', authenticateJWT, requireRole(['Admin', 'Finance']), async (req, res) => {
+routes.put('/api/inventory/:id', authenticateJWT, requireRole(['Admin', 'Finance']), async (req: AuthenticatedRequest, res) => {
   const { id } = req.params;
   const { name, sku, quantity, costPrice, supplier, importDate, restockDate } = req.body;
 
@@ -243,7 +258,7 @@ routes.put('/api/inventory/:id', authenticateJWT, requireRole(['Admin', 'Finance
     if (name) material.name = name;
     if (sku) material.sku = sku;
     if (quantity !== undefined) material.quantity = Number(quantity);
-    if (costPrice !== undefined) material.costPrice = Number(costPrice);
+    if (costPrice !== undefined && req.user?.role === 'Admin') material.costPrice = Number(costPrice);
     if (supplier) material.supplier = supplier;
     if (importDate) material.importDate = importDate;
     if (restockDate !== undefined) material.restockDate = restockDate;
@@ -382,6 +397,7 @@ routes.post('/api/sales', authenticateJWT, requireRole(['Seller', 'Finance', 'Ad
         paymentMethod,
         transferBank: paymentMethod === 'Transfer' ? transferBank : null,
         date,
+        repaidAmount: 0,
       },
       { transaction: t }
     );
@@ -406,7 +422,7 @@ routes.post('/api/sales', authenticateJWT, requireRole(['Seller', 'Finance', 'Ad
 
 routes.put('/api/sales/:id', authenticateJWT, requireRole(['Admin', 'Finance', 'Seller']), async (req: AuthenticatedRequest, res) => {
   const { id } = req.params;
-  const { customerName, quantity, totalAmount, paymentMethod, transferBank, date } = req.body;
+  const { customerName, quantity, totalAmount, paymentMethod, transferBank, date, repaidAmount } = req.body;
 
   try {
     const sale = await Sale.findByPk(id);
@@ -447,9 +463,47 @@ routes.put('/api/sales/:id', authenticateJWT, requireRole(['Admin', 'Finance', '
       sale.transferBank = paymentMethod === 'Transfer' ? transferBank : null;
     }
     if (date) sale.date = date;
+    if (repaidAmount !== undefined) sale.repaidAmount = Number(repaidAmount);
 
     await sale.save();
     res.json({ message: 'Sale record updated successfully.', sale });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
+routes.put('/api/sales/:id/repay', authenticateJWT, requireRole(['Admin', 'Finance', 'Seller']), async (req: AuthenticatedRequest, res) => {
+  const { id } = req.params;
+  const { amount } = req.body;
+
+  try {
+    const sale = await Sale.findByPk(id);
+    if (!sale) {
+      res.status(404).json({ error: 'Loan record not found.' });
+      return;
+    }
+    if (sale.paymentMethod !== 'Loan') {
+      res.status(400).json({ error: 'This transaction is not recorded as a loan.' });
+      return;
+    }
+
+    const repayAmt = Number(amount);
+    if (isNaN(repayAmt) || repayAmt < 0) {
+      res.status(400).json({ error: 'Repayment amount must be a positive number.' });
+      return;
+    }
+
+    const outstanding = sale.totalAmount - (sale.repaidAmount || 0);
+    if (repayAmt > outstanding) {
+      res.status(400).json({ error: `Cannot repay $${repayAmt.toFixed(2)}. The outstanding balance is $${outstanding.toFixed(2)}.` });
+      return;
+    }
+
+    sale.repaidAmount = Number(((sale.repaidAmount || 0) + repayAmt).toFixed(2));
+    await sale.save();
+
+    res.json({ message: 'Repayment recorded successfully.', sale });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -483,6 +537,115 @@ routes.delete('/api/sales/:id', authenticateJWT, requireRole(['Admin', 'Finance'
 
     await sale.destroy();
     res.json({ message: 'Sale record deleted and stock restored where applicable.' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
+// ==========================================
+// 4.5 COMPANY LOAN ROUTES (Admin, Finance, Seller)
+// ==========================================
+
+routes.get('/api/company-loans', authenticateJWT, async (req, res) => {
+  try {
+    const loans = await CompanyLoan.findAll({
+      order: [['date', 'DESC']],
+    });
+    res.json(loans);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+routes.post('/api/company-loans', authenticateJWT, requireRole(['Admin', 'Finance', 'Seller']), async (req, res) => {
+  const { lender, amount, repaidAmount, date } = req.body;
+
+  if (!lender || amount === undefined || !date) {
+    res.status(400).json({ error: 'Please provide lender, amount, and date.' });
+    return;
+  }
+
+  try {
+    const loan = await CompanyLoan.create({
+      lender,
+      amount: Number(amount),
+      repaidAmount: Number(repaidAmount || 0),
+      date,
+    });
+    res.status(201).json({ message: 'Company loan created successfully.', loan });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+routes.put('/api/company-loans/:id', authenticateJWT, requireRole(['Admin', 'Finance', 'Seller']), async (req, res) => {
+  const { id } = req.params;
+  const { lender, amount, repaidAmount, date } = req.body;
+
+  try {
+    const loan = await CompanyLoan.findByPk(id);
+    if (!loan) {
+      res.status(404).json({ error: 'Company loan record not found.' });
+      return;
+    }
+
+    if (lender !== undefined) loan.lender = lender;
+    if (amount !== undefined) loan.amount = Number(amount);
+    if (repaidAmount !== undefined) loan.repaidAmount = Number(repaidAmount);
+    if (date !== undefined) loan.date = date;
+
+    await loan.save();
+    res.json({ message: 'Company loan updated successfully.', loan });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+routes.post('/api/company-loans/:id/repay', authenticateJWT, requireRole(['Admin', 'Finance', 'Seller']), async (req: AuthenticatedRequest, res) => {
+  const { id } = req.params;
+  const { repayAmount } = req.body;
+
+  const repayAmt = Number(repayAmount);
+  if (isNaN(repayAmt) || repayAmt <= 0) {
+    res.status(400).json({ error: 'Please provide a valid positive repayment amount.' });
+    return;
+  }
+
+  try {
+    const loan = await CompanyLoan.findByPk(id);
+    if (!loan) {
+      res.status(404).json({ error: 'Company loan record not found.' });
+      return;
+    }
+
+    const outstanding = loan.amount - (loan.repaidAmount || 0);
+    if (repayAmt > outstanding + 0.01) {
+      res.status(400).json({ error: `Repayment amount $${repayAmt} exceeds outstanding balance of $${outstanding}.` });
+      return;
+    }
+
+    loan.repaidAmount = Number(((loan.repaidAmount || 0) + repayAmt).toFixed(2));
+    await loan.save();
+
+    res.json({ message: 'Repayment recorded successfully.', loan });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+routes.delete('/api/company-loans/:id', authenticateJWT, requireRole(['Admin', 'Finance', 'Seller']), async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const loan = await CompanyLoan.findByPk(id);
+    if (!loan) {
+      res.status(404).json({ error: 'Company loan record not found.' });
+      return;
+    }
+
+    await loan.destroy();
+    res.json({ message: 'Company loan deleted successfully.' });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -591,7 +754,11 @@ routes.get('/api/reports/master', authenticateJWT, requireRole(['Admin', 'Financ
       return true;
     });
 
-    const totalIncome = filteredSales.reduce((sum, sale) => sum + sale.totalAmount, 0);
+    // Gross Export Income includes all credit/cash/transfer sales in their full value
+    const totalIncome = filteredSales.reduce((sum, s) => sum + s.totalAmount, 0);
+
+    const loanSales = filteredSales.filter(s => s.paymentMethod === 'Loan');
+    const totalOutstandingLoans = loanSales.reduce((sum, s) => sum + (s.totalAmount - (s.repaidAmount || 0)), 0);
 
     // 2. Fetch all materials cost (Spent on importing)
     const materials = await Material.findAll();
@@ -613,9 +780,18 @@ routes.get('/api/reports/master', authenticateJWT, requireRole(['Admin', 'Financ
     });
     const totalExpenses = filteredExpenses.reduce((sum, exp) => sum + exp.amount, 0);
 
+    // 4. Company Loans logged
+    const companyLoans = await CompanyLoan.findAll();
+    const filteredCompanyLoans = companyLoans.filter((cl) => {
+      if (startDate && cl.date < (startDate as string)) return false;
+      if (endDate && cl.date > (endDate as string)) return false;
+      return true;
+    });
+    const totalOutstandingCompanyLoans = filteredCompanyLoans.reduce((sum, cl) => sum + (cl.amount - (cl.repaidAmount || 0)), 0);
+
     // Net Profit calculation
     const grossProfit = totalIncome - cogs;
-    const netProfit = grossProfit - totalExpenses;
+    const netProfit = totalIncome - cogs - totalExpenses;
 
     res.json({
       revenue: totalIncome,
@@ -624,6 +800,8 @@ routes.get('/api/reports/master', authenticateJWT, requireRole(['Admin', 'Financ
       companyExpenses: totalExpenses,
       netProfit: netProfit,
       inventoryAssetValue: inventoryAssetValue, // Total book value of remaining stock
+      outstandingLoans: totalOutstandingLoans,
+      outstandingCompanyLoans: totalOutstandingCompanyLoans,
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });

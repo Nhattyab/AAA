@@ -162,9 +162,10 @@ export interface SaleAttributes {
   materialSku?: string | null;
   quantity: number;
   totalAmount: number;
-  paymentMethod: 'Cash' | 'Transfer';
+  paymentMethod: 'Cash' | 'Transfer' | 'Loan' | 'Paid Loan';
   transferBank?: string | null;
   date: string;
+  repaidAmount?: number;
 }
 export interface SaleCreationAttributes extends Optional<SaleAttributes, 'id'> {}
 
@@ -177,9 +178,10 @@ export class Sale extends Model<SaleAttributes, SaleCreationAttributes> implemen
   public materialSku!: string | null;
   public quantity!: number;
   public totalAmount!: number;
-  public paymentMethod!: 'Cash' | 'Transfer';
+  public paymentMethod!: 'Cash' | 'Transfer' | 'Loan' | 'Paid Loan';
   public transferBank!: string | null;
   public date!: string;
+  public repaidAmount!: number;
 }
 
 Sale.init(
@@ -230,12 +232,17 @@ Sale.init(
       allowNull: false,
     },
     paymentMethod: {
-      type: DataTypes.ENUM('Cash', 'Transfer'),
+      type: DataTypes.ENUM('Cash', 'Transfer', 'Loan', 'Paid Loan'),
       allowNull: false,
     },
     transferBank: {
       type: DataTypes.STRING,
       allowNull: true,
+    },
+    repaidAmount: {
+      type: DataTypes.FLOAT,
+      allowNull: false,
+      defaultValue: 0,
     },
     date: {
       type: DataTypes.STRING,
@@ -302,6 +309,56 @@ Expense.init(
   }
 );
 
+// CompanyLoan model definition
+export interface CompanyLoanAttributes {
+  id: number;
+  lender: string;
+  amount: number;
+  repaidAmount: number;
+  date: string;
+}
+export interface CompanyLoanCreationAttributes extends Optional<CompanyLoanAttributes, 'id'> {}
+
+export class CompanyLoan extends Model<CompanyLoanAttributes, CompanyLoanCreationAttributes> implements CompanyLoanAttributes {
+  public id!: number;
+  public lender!: string;
+  public amount!: number;
+  public repaidAmount!: number;
+  public date!: string;
+}
+
+CompanyLoan.init(
+  {
+    id: {
+      type: DataTypes.INTEGER,
+      autoIncrement: true,
+      primaryKey: true,
+    },
+    lender: {
+      type: DataTypes.STRING,
+      allowNull: false,
+    },
+    amount: {
+      type: DataTypes.FLOAT,
+      allowNull: false,
+    },
+    repaidAmount: {
+      type: DataTypes.FLOAT,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    date: {
+      type: DataTypes.STRING,
+      allowNull: false,
+    },
+  },
+  {
+    sequelize,
+    modelName: 'CompanyLoan',
+    tableName: 'company_loans',
+  }
+);
+
 // Define Relationships
 // Sale <-> User (Seller)
 Sale.belongsTo(User, { foreignKey: 'sellerId', as: 'seller' });
@@ -327,6 +384,14 @@ export async function initDatabase() {
     }
     
     await sequelize.sync(); // Sync database schema safely, creates tables if they do not exist
+    
+    // Dynamically check and add repaidAmount column in case the SQLite table was already created
+    try {
+      await sequelize.query("ALTER TABLE sales ADD COLUMN repaidAmount REAL DEFAULT 0;");
+      console.log("Successfully added column 'repaidAmount' to 'sales' table.");
+    } catch (_) {
+      // Ignored if column already exists
+    }
   } catch (err: any) {
     const errMsg = String(err?.message || err);
     console.error('Database Sync Error:', err);
@@ -367,11 +432,116 @@ export async function initDatabase() {
     
     // Create Admin
     await User.create({
-      name: 'Super Admin',
-      email: 'admin@admin123',
-      passwordHash: bcrypt.hashSync('admin123321', saltRounds),
+      name: 'Natey Admin',
+      email: 'admin@company.com',
+      passwordHash: bcrypt.hashSync('admin123', saltRounds),
       role: 'Admin',
       status: 'active',
+    });
+
+    // Create Finance Guy
+    await User.create({
+      name: 'Felix Finance',
+      email: 'finance@company.com',
+      passwordHash: bcrypt.hashSync('finance123', saltRounds),
+      role: 'Finance',
+      status: 'active',
+    });
+
+    // Create Sellers
+    await User.create({
+      name: 'Sam Seller',
+      email: 'seller@company.com',
+      passwordHash: bcrypt.hashSync('seller123', saltRounds),
+      role: 'Seller',
+      status: 'active',
+    });
+
+    await User.create({
+      name: 'Silvia Sales',
+      email: 'silvia@company.com',
+      passwordHash: bcrypt.hashSync('seller123', saltRounds),
+      role: 'Seller',
+      status: 'active',
+    });
+
+    // Seed some initial materials (inventory)
+    const rawCopper = await Material.create({
+      name: 'Copper Wire Coils',
+      sku: 'COP-WRE-001',
+      quantity: 500,
+      costPrice: 4.5,
+      supplier: 'Santiago Copper S.A.',
+      importDate: '2026-05-15',
+    });
+
+    const steelSheets = await Material.create({
+      name: 'Industrial Steel Sheets',
+      sku: 'STL-SHT-502',
+      quantity: 250,
+      costPrice: 12.0,
+      supplier: 'Steel Corp India',
+      importDate: '2026-05-20',
+    });
+
+    const solarPanels = await Material.create({
+      name: 'Monocrystalline Solar Modules',
+      sku: 'SLR-PAN-109',
+      quantity: 120,
+      costPrice: 75.0,
+      supplier: 'Guangdong Solar Tech',
+      importDate: '2026-06-01',
+    });
+
+    // Seed some Sales
+    await Sale.create({
+      sellerId: 3, // Sam Seller
+      customerName: 'Global Grid Corp',
+      materialId: rawCopper.id,
+      quantity: 30,
+      totalAmount: 240.0, // Selling at 8.0 per unit (profit generated: 8.0 - 4.5 = 3.5 per unit)
+      paymentMethod: 'Transfer',
+      date: '2026-06-02',
+    });
+
+    await Sale.create({
+      sellerId: 4, // Silvia Sales
+      customerName: 'Smarter Energy Ltd',
+      materialId: solarPanels.id,
+      quantity: 10,
+      totalAmount: 1100.0, // Selling at 110.0 per unit (cost was 75.0)
+      paymentMethod: 'Transfer',
+      date: '2026-06-03',
+    });
+
+    // Seed some Expenses
+    await Expense.create({
+      category: 'Warehouse Electricity',
+      amount: 450.0,
+      date: '2026-06-01',
+      loggedById: 2, // Felix Finance
+    });
+
+    await Expense.create({
+      category: 'Customs Declaration Fee',
+      amount: 600.0,
+      date: '2026-06-02',
+      loggedById: 2, // Felix Finance
+    });
+
+    // Seed some initial Company Loans
+    await CompanyLoan.create({
+      lender: 'Development Bank of Ethiopia',
+      amount: 50000.0,
+      repaidAmount: 15000.0,
+      date: '2026-05-10',
+    });
+
+    await CompanyLoan.create({
+      lender: 'National Investment Fund',
+      amount: 25000.0,
+      repaidAmount: 0.0,
+      date: '2026-06-05',
     });
   }
 }

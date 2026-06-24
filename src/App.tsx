@@ -31,7 +31,8 @@ import {
   SaleItem,
   ExpenseItem,
   MasterReport,
-  SellerPerformance
+  SellerPerformance,
+  CompanyLoanItem
 } from './types';
 import { exportToCSV, printData } from './utils/exportUtils';
 
@@ -80,9 +81,10 @@ export default function App() {
   const [editCustomerName, setEditCustomerName] = useState('');
   const [editQuantity, setEditQuantity] = useState('');
   const [editTotalAmount, setEditTotalAmount] = useState('');
-  const [editPaymentMethod, setEditPaymentMethod] = useState<'Cash' | 'Transfer'>('Cash');
+  const [editPaymentMethod, setEditPaymentMethod] = useState<'Cash' | 'Transfer' | 'Loan' | 'Paid Loan'>('Cash');
   const [editTransferBank, setEditTransferBank] = useState('');
   const [editDate, setEditDate] = useState('');
+  const [editRepaidAmount, setEditRepaidAmount] = useState('');
 
   // Editing User state
   const [editingUser, setEditingUser] = useState<UserItem | null>(null);
@@ -97,6 +99,22 @@ export default function App() {
   const [editExpenseCategory, setEditExpenseCategory] = useState('');
   const [editExpenseAmount, setEditExpenseAmount] = useState('');
   const [editExpenseDate, setEditExpenseDate] = useState('');
+
+  // Company Loans State & Inputs
+  const [companyLoans, setCompanyLoans] = useState<CompanyLoanItem[]>([]);
+  const [newLender, setNewLender] = useState('');
+  const [newLoanAmount, setNewLoanAmount] = useState('');
+  const [newLoanDate, setNewLoanDate] = useState(new Date().toISOString().split('T')[0]);
+  
+  // Editing Company Loan
+  const [editingCompanyLoan, setEditingCompanyLoan] = useState<CompanyLoanItem | null>(null);
+  const [editLender, setEditLender] = useState('');
+  const [editLoanAmount, setEditLoanAmount] = useState('');
+  const [editLoanRepaidAmount, setEditLoanRepaidAmount] = useState('');
+  const [editLoanDate, setEditLoanDate] = useState('');
+
+  // Inline Repay Amount input values per Company Loan (keyed by loan ID)
+  const [repayAmounts, setRepayAmounts] = useState<Record<number, string>>({});
 
   // Seller details expansion state
   const [expandedSellers, setExpandedSellers] = useState<Record<number, boolean>>({});
@@ -115,6 +133,10 @@ export default function App() {
   const [salesEndDate, setSalesEndDate] = useState('');
   const [expenseStartDate, setExpenseStartDate] = useState('');
   const [expenseEndDate, setExpenseEndDate] = useState('');
+  const [clientLoansStartDate, setClientLoansStartDate] = useState('');
+  const [clientLoansEndDate, setClientLoansEndDate] = useState('');
+  const [companyLoansStartDate, setCompanyLoansStartDate] = useState('');
+  const [companyLoansEndDate, setCompanyLoansEndDate] = useState('');
 
   // Form inputs
   // A. Add User Form
@@ -122,9 +144,18 @@ export default function App() {
   // B. Add Material Form
   const [newMaterial, setNewMaterial] = useState({ name: '', sku: '', quantity: '', costPrice: '', supplier: '', importDate: new Date().toISOString().split('T')[0] });
   // C. Log Sale Form
-  const [newSale, setNewSale] = useState({ customerName: '', materialId: '', quantity: '', totalAmount: '', paymentMethod: 'Cash' as 'Cash' | 'Transfer', transferBank: '', date: new Date().toISOString().split('T')[0], sellerId: '' });
+  const [newSale, setNewSale] = useState({ customerName: '', materialId: '', quantity: '', totalAmount: '', paymentMethod: 'Cash' as 'Cash' | 'Transfer' | 'Loan' | 'Paid Loan', transferBank: '', date: new Date().toISOString().split('T')[0], sellerId: '' });
   // D. Add Expense Form
   const [newExpense, setNewExpense] = useState({ category: '', amount: '', date: new Date().toISOString().split('T')[0] });
+
+  // Get displayed payment method (returns 'Paid Loan' if paymentMethod is 'Paid Loan' or a 'Loan' that has been fully repaid)
+  const getDisplayPaymentMethod = (s: SaleItem): string => {
+    if (s.paymentMethod === 'Paid Loan') return 'Paid Loan';
+    if (s.paymentMethod === 'Loan' && (s.repaidAmount || 0) >= s.totalAmount) {
+      return 'Paid Loan';
+    }
+    return s.paymentMethod;
+  };
 
   // On mount, verify existing JWT cookie
   useEffect(() => {
@@ -187,7 +218,7 @@ export default function App() {
         body: JSON.stringify({ email: loginEmail, password: loginPassword }),
       });
 
-   if (res.ok) {
+      if (res.ok) {
         const contentType = res.headers.get('content-type');
         if (contentType && contentType.includes('application/json')) {
           const data = await res.json();
@@ -247,9 +278,10 @@ export default function App() {
     // All read inventory
     fetchInventory();
 
-    // Admin/Seller/Finance read sales
+    // Admin/Seller/Finance read sales and company loans
     if (user.role === 'Admin' || user.role === 'Seller' || user.role === 'Finance') {
       fetchSales();
+      fetchCompanyLoans();
     }
 
     // Admin/Finance read expenses and finance reports
@@ -260,6 +292,17 @@ export default function App() {
   };
 
   // FETCH API WRAPPERS
+  const fetchCompanyLoans = async () => {
+    try {
+      const res = await fetch('/api/company-loans');
+      if (res.ok) {
+        const data = await res.json();
+        setCompanyLoans(data);
+      }
+    } catch (err) {
+      console.error('Cannot fetch company loans:', err);
+    }
+  };
   const fetchUsers = async () => {
     try {
       const res = await fetch('/api/admin/users');
@@ -390,6 +433,286 @@ export default function App() {
     }
   };
 
+  // Loan Repayments Management State & Handler
+  const [repayInputs, setRepayInputs] = useState<{[saleId: number]: string}>({});
+
+  const handleRepayLoan = async (saleId: number, amount: number) => {
+    if (isNaN(amount) || amount <= 0) {
+      setApiError('Repayment amount must be a valid positive number.');
+      return;
+    }
+    setApiError('');
+    setApiSuccess('');
+    try {
+      const res = await fetch(`/api/sales/${saleId}/repay`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amount }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setApiSuccess(data.message || 'Repayment recorded successfully.');
+        setRepayInputs(prev => ({ ...prev, [saleId]: '' }));
+        fetchSales();
+        if (user && (user.role === 'Admin' || user.role === 'Finance')) {
+          fetchFinancials(reportStartDate, reportEndDate);
+        }
+      } else {
+        setApiError(data.error || 'Failed to record repayment.');
+      }
+    } catch (err: any) {
+      setApiError(err?.message || 'Network error recording repayment.');
+    }
+  };
+
+  // Company Loan Management Handlers
+  const handleCreateCompanyLoan = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newLender || !newLoanAmount || !newLoanDate) {
+      setApiError('Lender name, amount, and date are required.');
+      return;
+    }
+
+    setApiError('');
+    setApiSuccess('');
+    setLoadingAction(true);
+
+    try {
+      const res = await fetch('/api/company-loans', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lender: newLender,
+          amount: Number(newLoanAmount),
+          date: newLoanDate,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setApiSuccess('Company loan recorded successfully.');
+        setNewLender('');
+        setNewLoanAmount('');
+        setNewLoanDate(new Date().toISOString().split('T')[0]);
+        fetchCompanyLoans();
+      } else {
+        setApiError(data.error || 'Failed to record company loan.');
+      }
+    } catch (err: any) {
+      setApiError(err?.message || 'Network error creating company loan.');
+    } finally {
+      setLoadingAction(false);
+    }
+  };
+
+  const startEditCompanyLoan = (loan: CompanyLoanItem) => {
+    setEditingCompanyLoan(loan);
+    setEditLender(loan.lender);
+    setEditLoanAmount(String(loan.amount));
+    setEditLoanRepaidAmount(String(loan.repaidAmount || 0));
+    setEditLoanDate(loan.date);
+  };
+
+  const handleSaveCompanyLoanEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingCompanyLoan) return;
+
+    setApiError('');
+    setApiSuccess('');
+    setLoadingAction(true);
+
+    try {
+      const res = await fetch(`/api/company-loans/${editingCompanyLoan.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lender: editLender,
+          amount: Number(editLoanAmount),
+          repaidAmount: Number(editLoanRepaidAmount),
+          date: editLoanDate,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setApiSuccess('Company loan updated successfully.');
+        setEditingCompanyLoan(null);
+        fetchCompanyLoans();
+      } else {
+        setApiError(data.error || 'Failed to update company loan.');
+      }
+    } catch (err: any) {
+      setApiError(err?.message || 'Network error updating company loan.');
+    } finally {
+      setLoadingAction(false);
+    }
+  };
+
+  const handleDeleteCompanyLoan = async (loan: CompanyLoanItem) => {
+    setApiError('');
+    setApiSuccess('');
+    setLoadingAction(true);
+
+    try {
+      const res = await fetch(`/api/company-loans/${loan.id}`, {
+        method: 'DELETE',
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setApiSuccess('Company loan record deleted successfully.');
+        fetchCompanyLoans();
+      } else {
+        setApiError(data.error || 'Failed to delete company loan.');
+      }
+    } catch (err: any) {
+      setApiError(err?.message || 'Network error deleting company loan.');
+    } finally {
+      setLoadingAction(false);
+    }
+  };
+
+  const handleRepayCompanyLoan = async (loanId: number, amount: number) => {
+    if (isNaN(amount) || amount <= 0) {
+      setApiError('Repayment amount must be a valid positive number.');
+      return;
+    }
+    setApiError('');
+    setApiSuccess('');
+    try {
+      const res = await fetch(`/api/company-loans/${loanId}/repay`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repayAmount: amount }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setApiSuccess(data.message || 'Repayment recorded successfully.');
+        setRepayAmounts(prev => ({ ...prev, [loanId]: '' }));
+        fetchCompanyLoans();
+      } else {
+        setApiError(data.error || 'Failed to record repayment.');
+      }
+    } catch (err: any) {
+      setApiError(err?.message || 'Network error recording repayment.');
+    }
+  };
+
+  // Print Loan Registry to PDF
+  const handlePrintLoans = () => {
+    if (!user) return;
+    const activeLoans = sales.filter(s => {
+      if (user.role === 'Seller' && s.sellerId !== user.id) return false;
+      if (s.paymentMethod !== 'Loan') return false;
+      if (clientLoansStartDate && s.date < clientLoansStartDate) return false;
+      if (clientLoansEndDate && s.date > clientLoansEndDate) return false;
+      return true;
+    });
+    
+    const headers = [
+      'Client',
+      'Material Name',
+      'SKU',
+      'Units',
+      'Total Loan Amount',
+      'Repaid Sum',
+      'Balance Due',
+      'Date',
+      'Status'
+    ];
+    
+    const rows = activeLoans.map(s => {
+      const outstanding = s.totalAmount - (s.repaidAmount || 0);
+      return [
+        s.customerName,
+        s.materialName || 'Uncoded Spec',
+        s.materialSku || 'N/A',
+        s.quantity.toLocaleString('en-US'),
+        `$${s.totalAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
+        `$${(s.repaidAmount || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
+        `$${outstanding.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
+        s.date,
+        outstanding === 0 ? 'Settled' : 'DUE'
+      ];
+    });
+
+    const totalLoansAmount = activeLoans.reduce((sum, s) => sum + s.totalAmount, 0);
+    const totalRepaidSum = activeLoans.reduce((sum, s) => sum + (s.repaidAmount || 0), 0);
+    const totalBalanceDue = totalLoansAmount - totalRepaidSum;
+
+    // Append total row at the bottom of the table to be printed
+    rows.push([
+      'TOTAL LOANS OUTSTANDING', // Client
+      '', // Material Name
+      '', // SKU
+      '', // Units
+      `$${totalLoansAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
+      `$${totalRepaidSum.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
+      `$${totalBalanceDue.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
+      '', // Date
+      ''  // Status
+    ]);
+
+    const summarySectionHTML = `
+      <div style="display: flex; gap: 40px; margin-top: 5px;">
+        <div><strong>Total Credit Issued:</strong> $${totalLoansAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+        <div><strong>Total Recovered:</strong> $${totalRepaidSum.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+        <div style="color: #e11d48;"><strong>Aggregate Balance Due:</strong> $${totalBalanceDue.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+      </div>
+    `;
+
+    printData('Credit Line & Material Loan Registry Ledger', headers, rows, summarySectionHTML);
+  };
+
+  const handlePrintCompanyLoans = () => {
+    if (!user) return;
+    
+    const filteredCompanyLoans = companyLoans.filter(l => {
+      if (companyLoansStartDate && l.date < companyLoansStartDate) return false;
+      if (companyLoansEndDate && l.date > companyLoansEndDate) return false;
+      return true;
+    });
+
+    const headers = [
+      'Date',
+      'Lender (Source)',
+      'Total Loan Amount',
+      'Repaid Sum',
+      'Balance Due'
+    ];
+    
+    const rows = filteredCompanyLoans.map(l => {
+      const balance = l.amount - (l.repaidAmount || 0);
+      return [
+        l.date,
+        l.lender,
+        `$${l.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
+        `$${(l.repaidAmount || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
+        `$${balance.toLocaleString('en-US', { minimumFractionDigits: 2 })}`
+      ];
+    });
+
+    const totalBorrowed = filteredCompanyLoans.reduce((sum, l) => sum + l.amount, 0);
+    const totalRepaid = filteredCompanyLoans.reduce((sum, l) => sum + (l.repaidAmount || 0), 0);
+    const totalBalance = totalBorrowed - totalRepaid;
+
+    // Append total row at the bottom of the table to be printed
+    rows.push([
+      'GRAND TOTAL',
+      '',
+      `$${totalBorrowed.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
+      `$${totalRepaid.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
+      `$${totalBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })}`
+    ]);
+
+    const summarySectionHTML = `
+      <div style="display: flex; gap: 40px; margin-top: 5px;">
+        <div><strong>Total Borrowed:</strong> $${totalBorrowed.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+        <div><strong>Total Repaid:</strong> $${totalRepaid.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+        <div style="color: #e11d48;"><strong>Aggregate Balance Due:</strong> $${totalBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+      </div>
+    `;
+
+    printData('Company Borrowing Liability Loan Registry Ledger', headers, rows, summarySectionHTML);
+  };
+
   // Create Imported Material (Admin or Finance Only)
   const handleCreateMaterial = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -434,12 +757,13 @@ export default function App() {
     if (!item) return;
 
     const nextQty = item.quantity + quantityToRestock;
+    const combinedRestockDate = `${restockDate} (+${quantityToRestock} units)`;
 
     try {
       const res = await fetch(`/api/inventory/${materialId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ quantity: nextQty, restockDate }),
+        body: JSON.stringify({ quantity: nextQty, restockDate: combinedRestockDate }),
       });
 
       if (res.ok) {
@@ -464,6 +788,7 @@ export default function App() {
     setEditPaymentMethod(s.paymentMethod);
     setEditTransferBank(s.transferBank || '');
     setEditDate(s.date);
+    setEditRepaidAmount(String(s.repaidAmount || 0));
   };
 
   // Save changes to sale
@@ -484,7 +809,8 @@ export default function App() {
           totalAmount: Number(editTotalAmount),
           paymentMethod: editPaymentMethod,
           transferBank: editPaymentMethod === 'Transfer' ? editTransferBank : '',
-          date: editDate
+          date: editDate,
+          repaidAmount: editPaymentMethod === 'Loan' ? Number(editRepaidAmount) : 0
         }),
       });
 
@@ -524,6 +850,35 @@ export default function App() {
         fetchFinancials(reportStartDate, reportEndDate);
       } else {
         setApiError(data.error || 'Failed to remove sale log.');
+      }
+    } catch (err) {
+      setApiError('Network connection failed.');
+    }
+  };
+
+  // Delete client loan record from the registry (change payment method to 'Paid Loan' to preserve the sale log)
+  const handleDeleteLoanOnly = async (s: SaleItem) => {
+    if (!confirm(`Are you sure you want to remove this settled loan from the Loans registry? The sales record for this transaction will be preserved as a Paid Loan.`)) return;
+    setApiError('');
+    setApiSuccess('');
+
+    try {
+      const res = await fetch(`/api/sales/${s.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          paymentMethod: 'Paid Loan',
+        }),
+      });
+
+      const data = await res.json();
+      if (res.ok) {
+        setApiSuccess('Loan record removed from registry (sales ledger preserved as a Paid Loan).');
+        fetchSales();
+        fetchInventory();
+        fetchFinancials(reportStartDate, reportEndDate);
+      } else {
+        setApiError(data.error || 'Failed to remove loan record.');
       }
     } catch (err) {
       setApiError('Network connection failed.');
@@ -790,7 +1145,7 @@ export default function App() {
       .filter(m => {
         if (!materialStartDate && !materialEndDate) return true;
         const dStr = m.importDate;
-        const rStr = m.restockDate || null;
+        const rStr = m.restockDate ? m.restockDate.substring(0, 10) : null;
         const start = materialStartDate ? materialStartDate : '0000-00-00';
         const end = materialEndDate ? materialEndDate : '9999-12-31';
         
@@ -800,18 +1155,35 @@ export default function App() {
         return satisfiesImport || satisfiesRestock;
       });
 
-    const headers = ['ID', 'Material Name', 'SKU', 'Remaining Stock', 'Cost Price (USD)', 'Total Value (USD)', 'Supplier Origin', 'Import Date', 'Last Restocked'];
-    const rows = filtered.map(m => [
-      m.id.toString(),
-      m.name,
-      m.sku,
-      m.quantity.toLocaleString('en-US'),
-      `$${m.costPrice.toFixed(2)}`,
-      `$${(m.quantity * m.costPrice).toFixed(2)}`,
-      m.supplier,
-      m.importDate,
-      m.restockDate || 'N/A'
-    ]);
+    const headers = user.role === 'Admin'
+      ? ['ID', 'Material Name', 'SKU', 'Remaining Stock', 'Cost Price (USD)', 'Total Value (USD)', 'Supplier Origin', 'Import Date', 'Last Restocked']
+      : ['ID', 'Material Name', 'SKU', 'Remaining Stock', 'Supplier Origin', 'Import Date', 'Last Restocked'];
+
+    const rows = filtered.map(m => {
+      if (user.role === 'Admin') {
+        return [
+          m.id.toString(),
+          m.name,
+          m.sku,
+          m.quantity.toLocaleString('en-US'),
+          `$${m.costPrice.toFixed(2)}`,
+          `$${(m.quantity * m.costPrice).toFixed(2)}`,
+          m.supplier,
+          m.importDate,
+          m.restockDate || 'N/A'
+        ];
+      } else {
+        return [
+          m.id.toString(),
+          m.name,
+          m.sku,
+          m.quantity.toLocaleString('en-US'),
+          m.supplier,
+          m.importDate,
+          m.restockDate || 'N/A'
+        ];
+      }
+    });
 
     if (format === 'excel') {
       exportToCSV(headers, rows, `Material_Inventory_Registry_${new Date().toISOString().split('T')[0]}`);
@@ -825,7 +1197,7 @@ export default function App() {
   // 2. Export Sales Export Logistics
   const handleExportSales = (format: 'print' | 'excel') => {
     const filtered = sales
-      .filter(s => paymentOptionFilter === 'All' || s.paymentMethod === paymentOptionFilter)
+      .filter(s => paymentOptionFilter === 'All' || getDisplayPaymentMethod(s) === paymentOptionFilter)
       .filter(s => {
         if (!salesStartDate && !salesEndDate) return true;
         const start = salesStartDate ? salesStartDate : '0000-00-00';
@@ -845,8 +1217,8 @@ export default function App() {
       s.material?.sku || s.materialSku || 'N/A',
       s.quantity.toLocaleString('en-US'),
       `$${s.totalAmount.toFixed(2)}`,
-      s.paymentMethod,
-      s.paymentMethod === 'Transfer' ? (s.transferBank || 'N/A') : '-'
+      getDisplayPaymentMethod(s),
+      getDisplayPaymentMethod(s) === 'Transfer' ? (s.transferBank || 'N/A') : '-'
     ]);
 
     if (format === 'excel') {
@@ -877,8 +1249,8 @@ export default function App() {
         '',
         ''
       ]];
-      printData('Sales Logs', headers, printRows);
-      setApiSuccess('System print requested for Sales Export Logistics.');
+      printData('Sales Records', headers, printRows);
+      setApiSuccess('System print requested for Sales Records.');
     }
   };
 
@@ -904,7 +1276,7 @@ export default function App() {
       exportToCSV(headers, rows, `Company_Expense_Ledger_${new Date().toISOString().split('T')[0]}`);
       setApiSuccess('Expenses exported to Excel CSV successfully!');
     } else {
-      printData('Company Expenses', headers, rows.map(r => r.map(String)));
+      printData('Company Expense Records', headers, rows.map(r => r.map(String)));
       setApiSuccess('System print requested for Company Expense Ledger.');
     }
   };
@@ -927,6 +1299,8 @@ export default function App() {
         ['Revenue (Total Books)', `$${masterReport.revenue.toFixed(2)}`, 'Aggregate gross sales volume from seller desks.'],
         ['Cost of Goods Sold (COGS)', `$${masterReport.cogs.toFixed(2)}`, 'Aggregate import cost basis of materials sold.'],
         ['Gross Profit Margin', `$${masterReport.grossProfit.toFixed(2)}`, 'Sales Revenue less Cost of Goods Sold.'],
+        ['Outstanding Client Loans', `$${(masterReport.outstandingLoans || 0).toFixed(2)}`, 'Total remaining unpaid client loan balance.'],
+        ['Outstanding Company Loans', `$${(masterReport.outstandingCompanyLoans || 0).toFixed(2)}`, 'Total remaining unpaid company debt balance.'],
         ['Logged Company Expenses', `$${masterReport.companyExpenses.toFixed(2)}`, 'General utility, shipping, freight, and custom clearance depletions.'],
         ['Net Profit (Final Margin)', `$${masterReport.netProfit.toFixed(2)}`, 'Gross Profit less logged expenses.'],
         ['Material Asset Valuation', `$${masterReport.inventoryAssetValue.toFixed(2)}`, 'Aggregate cost valuation of materials currently remaining in warehouses.'],
@@ -951,7 +1325,7 @@ export default function App() {
       // Print as a gorgeous PDF layout with a top KPI box section
       const summarySectionHTML = `
         <div style="font-size: 13px; font-weight: 700; color: #1e293b; margin-bottom: 10px; border-bottom: 1px solid #cbd5e1; padding-bottom: 4px; text-transform: uppercase; letter-spacing: 0.05em;">Financial KPI Indicators</div>
-        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 15px;">
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 15px;">
           <div style="background-color: #f1f5f9; padding: 10px; border-radius: 6px;">
             <div style="font-size: 9px; color: #64748b; text-transform: uppercase;">Total Sales Revenue</div>
             <div style="font-size: 15px; font-weight: 700; color: #0f172a;">$${masterReport.revenue.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
@@ -959,6 +1333,14 @@ export default function App() {
           <div style="background-color: #f1f5f9; padding: 10px; border-radius: 6px;">
             <div style="font-size: 9px; color: #64748b; text-transform: uppercase;">Cost of Goods Sold</div>
             <div style="font-size: 15px; font-weight: 700; color: #0f172a;">$${masterReport.cogs.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+          </div>
+          <div style="background-color: #f1f5f9; padding: 10px; border-radius: 6px;">
+            <div style="font-size: 9px; color: #64748b; text-transform: uppercase;">Outstanding Client Loans</div>
+            <div style="font-size: 15px; font-weight: 700; color: #0f172a;">$${(masterReport.outstandingLoans || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+          </div>
+          <div style="background-color: #f1f5f9; padding: 10px; border-radius: 6px;">
+            <div style="font-size: 9px; color: #64748b; text-transform: uppercase;">Outstanding Company Loans</div>
+            <div style="font-size: 15px; font-weight: 700; color: #0f172a;">$${(masterReport.outstandingCompanyLoans || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
           </div>
           <div style="background-color: #f1f5f9; padding: 10px; border-radius: 6px;">
             <div style="font-size: 9px; color: #64748b; text-transform: uppercase;">Operating Expenses</div>
@@ -969,7 +1351,7 @@ export default function App() {
             <div style="font-size: 15px; font-weight: 850; color: ${masterReport.netProfit >= 0 ? '#15803d' : '#b91c1c'};">$${masterReport.netProfit.toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
           </div>
         </div>
-        <div style="font-size: 10px; color: #64748b;">* Financial reports are calculated over date range: <strong>${reportRange}</strong>. Warehoused asset valuation: <strong>$${masterReport.inventoryAssetValue.toLocaleString('en-US', { minimumFractionDigits: 2 })}</strong></div>
+        <div style="font-size: 10px; color: #64748b; margin-bottom: 10px;">* Financial reports are calculated over date range: <strong>${reportRange}</strong>. Warehoused asset valuation: <strong>$${masterReport.inventoryAssetValue.toLocaleString('en-US', { minimumFractionDigits: 2 })}</strong></div>
       `;
 
       // Main Seller list headers
@@ -985,7 +1367,7 @@ export default function App() {
         `$${seller.profitContribution.toLocaleString('en-US', { minimumFractionDigits: 2 })}`
       ]);
 
-      printData(`Financial Report`, headers, rows, summarySectionHTML);
+      printData(`Company Financial Performance Balance & Seller Performance`, headers, rows, summarySectionHTML);
       setApiSuccess('System print requested for Consolidated Balance Sheets.');
     }
   };
@@ -1010,7 +1392,7 @@ export default function App() {
             <div className="bg-indigo-600 p-2 rounded-lg" id="logo-badge">
               <Building2 className="w-6 h-6 text-white" />
             </div>
-            <span className="text-xl font-bold tracking-tight text-white font-mono">Alexander IMPORT & Export</span>
+            <span className="text-xl font-bold tracking-tight text-white font-mono">Alexander Import & Export</span>
           </div>
           
           <div className="my-12 md:my-0" id="promotional-context">
@@ -1020,7 +1402,7 @@ export default function App() {
           </div>
 
           <div className="text-xs text-slate-500 font-mono" id="current-timestamp">
-            SYSTEM Developed by <a href="t.me/abityazz">Natnael Eyob</a>
+            SYSTEM Developed BY : <a href="t.me/Abityazz">Natnael Eyob</a>
           </div>
         </div>
 
@@ -1029,7 +1411,7 @@ export default function App() {
           <div className="w-full max-w-md space-y-8" id="form-parent-block">
             <div className="space-y-2">
               <h2 className="text-2xl font-bold tracking-tight text-neutral-100">Sign in to Management Panel</h2>
-              <p className="text-sm text-slate-400">Enter your credentials for login</p>
+              <p className="text-sm text-slate-400">Enter your credentials.</p>
             </div>
 
             {loginError && (
@@ -1041,7 +1423,7 @@ export default function App() {
 
             <form className="space-y-4" onSubmit={handleLogin} id="auth-sign-in-form">
               <div className="space-y-1.5" id="group-email">
-                <label className="text-xs font-semibold uppercase tracking-wider text-slate-400 block">Email or Username</label>
+                <label className="text-xs font-semibold uppercase tracking-wider text-slate-400 block">Username</label>
                 <input
                   type="text"
                   id="input-login-email"
@@ -1074,6 +1456,7 @@ export default function App() {
                 Sign In
               </button>
             </form>
+
           </div>
         </div>
       </div>
@@ -1113,7 +1496,7 @@ export default function App() {
           <div className="bg-indigo-600 p-1.5 rounded-md" id="badge-icon-nav">
             <Building2 className="w-5 h-5 text-white" />
           </div>
-          <span className="font-bold font-mono tracking-tight text-white text-base">Alexander IMPORT & Export</span>
+          <span className="font-bold font-mono tracking-tight text-white text-base">Alexander Import & Export</span>
           <span className="text-xs text-slate-400 font-mono hidden sm:inline px-2 py-0.5 bg-slate-800 rounded">v1.1</span>
         </div>
 
@@ -1199,6 +1582,19 @@ export default function App() {
 
               {(user.role === 'Admin' || user.role === 'Finance') && (
                 <button
+                  id="tab-btn-loans"
+                  onClick={() => setActiveTab('loans')}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-semibold tracking-wide transition-all ${
+                    activeTab === 'loans' ? 'bg-indigo-600 text-white shadow-lg' : 'hover:bg-slate-900 text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <CreditCard className="w-4 h-4 shrink-0" />
+                  Company & Client Loan
+                </button>
+              )}
+
+              {(user.role === 'Admin' || user.role === 'Finance') && (
+                <button
                   id="tab-btn-expenses"
                   onClick={() => setActiveTab('expenses')}
                   className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-semibold tracking-wide transition-all ${
@@ -1229,12 +1625,12 @@ export default function App() {
         {/* WORKSPACE CENTRAL CANVAS */}
         <main className="flex-1 p-6 overflow-y-auto max-w-7xl mx-auto w-full" id="workspace-primary-dashboard">
           
-          {/* TAB 1: USER MANAGEMENT PANEL (Admin Only) */}
+          {/* TAB 1: Staff MANAGEMENT PANEL (Admin Only) */}
           {activeTab === 'users' && user.role === 'Admin' && (
             <div className="space-y-6" id="tab-users-wrapper">
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-100 pb-4" id="users-panel-header">
                 <div>
-                  <h1 className="text-2xl font-bold tracking-tight text-slate-950">Company Staff Register</h1>
+                  <h1 className="text-2xl font-bold tracking-tight text-slate-950">Staff Members Management</h1>
                   <p className="text-xs text-slate-500">Add, view, edit, and toggle activation status for Staff Members.</p>
                 </div>
               </div>
@@ -1245,7 +1641,7 @@ export default function App() {
                 {/* Users Table */}
                 <div className="bg-white border border-slate-100 rounded-xl shadow-sm lg:col-span-2 overflow-hidden flex flex-col" id="users-table-container">
                   <div className="p-4 border-b border-slate-50 bg-slate-50/50 flex items-center justify-between" id="users-search-top">
-                    <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Employee List ({users.length})</span>
+                    <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Staff Members List ({users.length})</span>
                     <span className="text-[10px] font-mono bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded-full font-semibold">Admin Access Secure</span>
                   </div>
                   
@@ -1253,11 +1649,11 @@ export default function App() {
                     <table className="w-full text-left text-xs border-collapse">
                       <thead>
                         <tr className="bg-slate-50 border-b border-slate-100 font-semibold uppercase text-slate-600 tracking-wider">
-                          <th className="p-3">Staff Full Name</th>
-                          <th className="p-3">User Name</th>
+                          <th className="p-3">Staff Name</th>
+                          <th className="p-3">Email Contact</th>
                           <th className="p-3">Role Group</th>
                           <th className="p-3">Status</th>
-                          <th className="p-3 text-right">Options</th>
+                          <th className="p-3 text-right">Action Options</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-55" id="users-tbody">
@@ -1345,12 +1741,12 @@ export default function App() {
                     </div>
 
                     <div className="space-y-1" id="staff-form-email-group">
-                      <label className="text-[11px] font-semibold text-slate-600 uppercase tracking-widest">Username</label>
+                      <label className="text-[11px] font-semibold text-slate-600 uppercase tracking-widest">Username / Email</label>
                       <input
                         type="text"
                         id="staff-input-email"
                         className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-800 text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none"
-                        placeholder="johndoe"
+                        placeholder="johndoe or john.doe@company.com"
                         value={newUser.email}
                         onChange={(e) => setNewUser(prev => ({ ...prev, email: e.target.value }))}
                         required
@@ -1380,7 +1776,7 @@ export default function App() {
                         required
                       >
                         <option value="Seller">Seller (Logs & record sales only)</option>
-                        <option value="Finance">Finance Guy (Expenses & Master Financials)</option>
+                        <option value="Finance">Finance (Expenses & Master Financials)</option>
                       </select>
                     </div>
 
@@ -1406,7 +1802,7 @@ export default function App() {
                 <div>
                   <h1 className="text-2xl font-bold tracking-tight text-slate-950">Material Inventory Registry (Imports)</h1>
                   <p className="text-xs text-slate-500">
-                    Track raw materials imported from global partners. 
+                    Track raw materials imported from partners. 
                     {user.role !== 'Seller' ? ' Modifiable by Admin and Finance.' : ' Read-only lookup permissions for dynamic stock decrementing.'}
                   </p>
                 </div>
@@ -1438,7 +1834,7 @@ export default function App() {
                 {/* Inventory Table Container */}
                 <div className="bg-white border border-slate-100 rounded-xl shadow-sm lg:col-span-2 overflow-hidden flex flex-col" id="inventory-sheet-grid font-sans">
                   <div className="p-4 border-b border-slate-100 bg-slate-50/50 flex flex-col md:flex-row justify-between items-start md:items-center gap-3" id="filters-panel">
-                    <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Registry Ledger</span>
+                    <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Registry</span>
                     
                     {/* Date Filters & Search Field */}
                     <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full md:w-auto">
@@ -1493,7 +1889,7 @@ export default function App() {
                           <th className="p-3">Import Date</th>
                           <th className="p-3">Last Restocked</th>
                           <th className="p-3">Remaining Stock</th>
-                          <th className="p-3">Cost Basis (Unit)</th>
+                          {user.role === 'Admin' && <th className="p-3">Cost Basis (Unit)</th>}
                           <th className="p-3">Supplier Origin</th>
                           {user.role !== 'Seller' && <th className="p-3 text-right">Audit Actions</th>}
                         </tr>
@@ -1507,7 +1903,7 @@ export default function App() {
                           .filter(m => {
                             if (!materialStartDate && !materialEndDate) return true;
                             const dStr = m.importDate;
-                            const rStr = m.restockDate || null;
+                            const rStr = m.restockDate ? m.restockDate.substring(0, 10) : null;
                             const start = materialStartDate ? materialStartDate : '0000-00-00';
                             const end = materialEndDate ? materialEndDate : '9999-12-31';
                             
@@ -1545,7 +1941,9 @@ export default function App() {
                                     <div className="text-[9px] text-amber-600 font-medium font-sans">Critical Stock Level Warning</div>
                                   )}
                                 </td>
-                                <td className="p-3 font-mono font-semibold text-indigo-700">${m.costPrice.toFixed(2)}</td>
+                                {user.role === 'Admin' && (
+                                  <td className="p-3 font-mono font-semibold text-indigo-700">${m.costPrice.toFixed(2)}</td>
+                                )}
                                 <td className="p-3 text-slate-600">{m.supplier}</td>
                                 
                                 {user.role !== 'Seller' && (
@@ -1625,7 +2023,7 @@ export default function App() {
                           })}
                         {materials.length === 0 && (
                           <tr>
-                            <td colSpan={6} className="p-8 text-center text-slate-400 font-mono">
+                            <td colSpan={user.role === 'Admin' ? 7 : 6} className="p-8 text-center text-slate-400 font-mono">
                               No imported materials registered in inventory.
                             </td>
                           </tr>
@@ -1691,21 +2089,23 @@ export default function App() {
                         </div>
                       </div>
 
-                      <div className="grid grid-cols-2 gap-2" id="grid-cost-date">
-                        <div className="space-y-1">
-                          <label className="text-[11px] font-semibold text-slate-600 uppercase tracking-widest">Import Cost ($)</label>
-                          <input
-                            type="number"
-                            step="0.01"
-                            id="mat-input-cost"
-                            className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-slate-800 text-xs font-mono focus:ring-1 focus:ring-indigo-500 focus:outline-none"
-                            placeholder="45.50"
-                            min="0.01"
-                            value={newMaterial.costPrice}
-                            onChange={(e) => setNewMaterial(prev => ({ ...prev, costPrice: e.target.value }))}
-                            required
-                          />
-                        </div>
+                      <div className={user.role === 'Admin' ? "grid grid-cols-2 gap-2" : "space-y-1"} id="grid-cost-date">
+                        {user.role === 'Admin' && (
+                          <div className="space-y-1">
+                            <label className="text-[11px] font-semibold text-slate-600 uppercase tracking-widest">Import Cost ($)</label>
+                            <input
+                              type="number"
+                              step="0.01"
+                              id="mat-input-cost"
+                              className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-slate-800 text-xs font-mono focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                              placeholder="45.50"
+                              min="0.01"
+                              value={newMaterial.costPrice}
+                              onChange={(e) => setNewMaterial(prev => ({ ...prev, costPrice: e.target.value }))}
+                              required={user.role === 'Admin'}
+                            />
+                          </div>
+                        )}
                         <div className="space-y-1">
                           <label className="text-[11px] font-semibold text-slate-600 uppercase tracking-widest">Import Date</label>
                           <input
@@ -1753,7 +2153,7 @@ export default function App() {
             <div className="space-y-6" id="tab-sales-wrapper">
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-100 pb-4" id="sales-header">
                 <div>
-                  <h1 className="text-2xl font-bold tracking-tight text-slate-950">Sales Logs</h1>
+                  <h1 className="text-2xl font-bold tracking-tight text-slate-950">Sales Logistics (Bookings)</h1>
                   <p className="text-xs text-slate-500">
                     {user.role === 'Seller' 
                       ? 'Secure Seller Portal. You can only view sales logs entered under your credentials.' 
@@ -1788,7 +2188,7 @@ export default function App() {
                 {/* Sales Ledger Table */}
                 <div className="bg-white border border-slate-100 rounded-xl shadow-sm lg:col-span-2 overflow-hidden flex flex-col" id="sales-ledg-card">
                   <div className="p-4 border-b border-slate-100 bg-slate-50/50 flex flex-col xl:flex-row justify-between items-start xl:items-center gap-3" id="sales-sub-header">
-                    <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Sales Logs</span>
+                    <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Booked Sales Transactions</span>
                     
                     {/* Filters bar */}
                     <div className="flex flex-wrap items-center gap-2 w-full xl:w-auto" id="sales-filter-row">
@@ -1817,9 +2217,11 @@ export default function App() {
                         value={paymentOptionFilter}
                         onChange={(e) => setPaymentOptionFilter(e.target.value)}
                       >
-                        <option value="All">All Payments (Cash & Transfer)</option>
+                        <option value="All">All Payments</option>
                         <option value="Cash">Cash Only</option>
                         <option value="Transfer">Transfer Only</option>
+                        <option value="Loan">Active Loans</option>
+                        <option value="Paid Loan">Paid Loans</option>
                       </select>
 
                       {(salesStartDate || salesEndDate) && (
@@ -1848,7 +2250,7 @@ export default function App() {
                       </thead>
                       <tbody className="divide-y divide-slate-100" id="sales-tbody">
                         {sales
-                          .filter(s => paymentOptionFilter === 'All' || s.paymentMethod === paymentOptionFilter)
+                          .filter(s => paymentOptionFilter === 'All' || getDisplayPaymentMethod(s) === paymentOptionFilter)
                           .filter(s => {
                             if (!salesStartDate && !salesEndDate) return true;
                             const start = salesStartDate ? salesStartDate : '0000-00-00';
@@ -1877,9 +2279,9 @@ export default function App() {
                               <td className="p-3 font-mono font-bold text-emerald-700 text-right">
                                 ${s.totalAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                 <span className="text-[10px] block font-semibold uppercase text-slate-400 font-mono tracking-wider">
-                                  {s.paymentMethod}
+                                  {getDisplayPaymentMethod(s)}
                                 </span>
-                                {s.paymentMethod === 'Transfer' && s.transferBank && (
+                                {getDisplayPaymentMethod(s) === 'Transfer' && s.transferBank && (
                                   <span className="text-[9px] block font-normal text-indigo-600 font-sans tracking-wide leading-tight mt-0.5 text-right">
                                     {s.transferBank}
                                   </span>
@@ -2000,10 +2402,11 @@ export default function App() {
                           id="sale-payment-method"
                           className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-slate-800 text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none"
                           value={newSale.paymentMethod}
-                          onChange={(e) => setNewSale(prev => ({ ...prev, paymentMethod: e.target.value as 'Cash' | 'Transfer' }))}
+                          onChange={(e) => setNewSale(prev => ({ ...prev, paymentMethod: e.target.value as 'Cash' | 'Transfer' | 'Loan' | 'Paid Loan' }))}
                         >
                           <option value="Cash">Cash</option>
                           <option value="Transfer">Bank Transfer</option>
+                          <option value="Loan">Loan (Outstanding Balance)</option>
                         </select>
                       </div>
                     </div>
@@ -2087,7 +2490,7 @@ export default function App() {
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-100 pb-4" id="expenses-hdr">
                 <div>
                   <h1 className="text-2xl font-bold tracking-tight text-slate-950">Company Expense Ledger</h1>
-                  <p className="text-xs text-slate-500">Record general utility fees,logistics, or custom clearance depletions logged by Admin or Finance staff.</p>
+                  <p className="text-xs text-slate-500">logged by Admin or Finance staff.</p>
                 </div>
                 <div className="flex items-center gap-2" id="expenses-export-buttons">
                   <button
@@ -2117,7 +2520,7 @@ export default function App() {
                 {/* Expenses List */}
                 <div className="bg-white border border-slate-100 rounded-xl shadow-sm lg:col-span-2 overflow-hidden flex flex-col" id="exp-ledger-card">
                   <div className="p-4 border-b border-slate-100 bg-slate-50/50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3" id="exp-card-header">
-                    <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Logged Payout Records ({expenses.length})</span>
+                    <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Payout Records ({expenses.length})</span>
                     
                     {/* Date range selection */}
                     <div className="flex items-center gap-1.5" id="exp-date-filters">
@@ -2153,7 +2556,7 @@ export default function App() {
                       <thead>
                         <tr className="bg-slate-50 border-b border-slate-100 font-semibold uppercase text-slate-600 tracking-wider">
                           <th className="p-3">Reference ID</th>
-                          <th className="p-3">Expense Reason</th>
+                          <th className="p-3">Expense Category</th>
                           <th className="p-3">Logged By Staff</th>
                           <th className="p-3">Payment Date</th>
                           <th className="p-3 font-mono text-right">Sum Disbursed</th>
@@ -2221,7 +2624,7 @@ export default function App() {
 
                   <form className="space-y-4" onSubmit={handleLogExpense} id="company-expense-form">
                     <div className="space-y-1" id="group-ecategory">
-                      <label className="text-[11px] font-semibold text-slate-600 uppercase tracking-widest block">Expense Reason</label>
+                      <label className="text-[11px] font-semibold text-slate-600 uppercase tracking-widest block">Expense Category Name</label>
                       <input
                         type="text"
                         id="exp-input-category"
@@ -2280,7 +2683,8 @@ export default function App() {
             <div className="space-y-6 animate-fade-in" id="tab-reports-wrapper">
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-100 pb-4" id="reports-header-box">
                 <div>
-                  <h1 className="text-2xl font-bold tracking-tight text-slate-950">Financial Reports</h1>
+                  <h1 className="text-2xl font-bold tracking-tight text-slate-950">Company Financial Performance</h1>
+                  <p className="text-xs text-slate-500">Gross metrics</p>
                 </div>
                 <div className="flex items-center gap-2 flex-wrap" id="reports-action-buttons">
                   <button
@@ -2363,60 +2767,90 @@ export default function App() {
               </div>
 
               {/* Master Balance Sheet Top Row Boxes */}
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4" id="report-financial-boxes">
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4" id="report-financial-boxes">
                 
                 {/* 1. Gross Revenue Box */}
                 <div className="bg-white border border-slate-100 rounded-xl p-5 shadow-sm space-y-2 relative overflow-hidden" id="box-revenue">
                   <div className="absolute top-0 left-0 w-full h-1 bg-indigo-500"></div>
                   <div className="flex items-center justify-between" id="row-revenue">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Total Sales Income</span>
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Gross Income</span>
                     <div className="p-1 rounded bg-indigo-50 font-semibold" id="icon-container-revenue">
                       <TrendingUp className="w-4 h-4 text-indigo-700" />
                     </div>
                   </div>
-                  <div className="text-2xl font-bold text-slate-900 font-mono" id="val-revenue">
+                  <div className="text-xl font-bold text-slate-900 font-mono" id="val-revenue">
                     ${masterReport?.revenue.toLocaleString('en-US', { minimumFractionDigits: 2 }) || '0.00'}
                   </div>
-                  <p className="text-[10px] text-slate-500">Sum value of all client booked transactions.</p>
+                  <p className="text-[10px] text-slate-500">Total sales plus repaid loans in range.</p>
                 </div>
 
                 {/* 2. Materials COGS Cost Basis Box */}
                 <div className="bg-white border border-slate-100 rounded-xl p-5 shadow-sm space-y-2 relative overflow-hidden" id="box-cogs">
                   <div className="absolute top-0 left-0 w-full h-1 bg-amber-500"></div>
                   <div className="flex items-center justify-between" id="row-cogs">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Cost of Goods Sold (COGS)</span>
+                    <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500">Cost of Goods Sold (COGS)</span>
                     <div className="p-1 rounded bg-amber-50" id="icon-container-cogs">
                       <Package className="w-4 h-4 text-amber-700" />
                     </div>
                   </div>
-                  <div className="text-2xl font-bold text-slate-900 font-mono" id="val-cogs">
+                  <div className="text-xl font-bold text-slate-900 font-mono" id="val-cogs">
                     ${masterReport?.cogs.toLocaleString('en-US', { minimumFractionDigits: 2 }) || '0.00'}
                   </div>
-                  <p className="text-[10px] text-slate-500">Total import cost price of raw inventory sold.</p>
+                  <p className="text-[10px] text-slate-500">Total import cost price of Materials sold.</p>
                 </div>
 
-                {/* 3. Company expenses */}
+                {/* 3. Outstanding Loans Box */}
+                <div className="bg-white border border-slate-100 rounded-xl p-5 shadow-sm space-y-2 relative overflow-hidden" id="box-outstanding-loans">
+                  <div className="absolute top-0 left-0 w-full h-1 bg-violet-500"></div>
+                  <div className="flex items-center justify-between" id="row-outstanding-loans">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Client Loans</span>
+                    <div className="p-1 rounded bg-violet-50 animate-pulse" id="icon-container-outstanding-loans">
+                      <CreditCard className="w-4 h-4 text-violet-700" />
+                    </div>
+                  </div>
+                  <div className="text-xl font-bold text-slate-900 font-mono" id="val-outstanding-loans">
+                    ${masterReport?.outstandingLoans?.toLocaleString('en-US', { minimumFractionDigits: 2 }) || '0.00'}
+                  </div>
+                  <p className="text-[10px] text-slate-500">Total remaining unpaid client loan balance.</p>
+                </div>
+
+                {/* 3b. Company Outstanding Loans Box */}
+                <div className="bg-white border border-slate-100 rounded-xl p-5 shadow-sm space-y-2 relative overflow-hidden" id="box-outstanding-company-loans">
+                  <div className="absolute top-0 left-0 w-full h-1 bg-teal-500"></div>
+                  <div className="flex items-center justify-between" id="row-outstanding-company-loans">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Company Loans</span>
+                    <div className="p-1 rounded bg-teal-50 animate-pulse" id="icon-container-outstanding-company-loans">
+                      <Building2 className="w-4 h-4 text-teal-700" />
+                    </div>
+                  </div>
+                  <div className="text-xl font-bold text-slate-900 font-mono" id="val-outstanding-company-loans">
+                    ${masterReport?.outstandingCompanyLoans?.toLocaleString('en-US', { minimumFractionDigits: 2 }) || '0.00'}
+                  </div>
+                  <p className="text-[10px] text-slate-500">Total remaining unpaid company debt balance.</p>
+                </div>
+
+                {/* 4. Company expenses */}
                 <div className="bg-white border border-slate-100 rounded-xl p-5 shadow-sm space-y-2 relative overflow-hidden" id="box-expenses">
                   <div className="absolute top-0 left-0 w-full h-1 bg-rose-500"></div>
                   <div className="flex items-center justify-between" id="row-expenses">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Total Company Expense</span>
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Company Expenses</span>
                     <div className="p-1 rounded bg-rose-50" id="icon-container-expenses">
                       <Coins className="w-4 h-4 text-rose-700" />
                     </div>
                   </div>
-                  <div className="text-2xl font-bold text-slate-900 font-mono" id="val-expenses">
+                  <div className="text-xl font-bold text-slate-900 font-mono" id="val-expenses">
                     ${masterReport?.companyExpenses.toLocaleString('en-US', { minimumFractionDigits: 2 }) || '0.00'}
                   </div>
                   <p className="text-[10px] text-slate-500">Utilities, declaration fees, warehouse rents.</p>
                 </div>
 
-                {/* 4. Net Profit Margins */}
+                {/* 5. Net Profit Margins */}
                 {masterReport && (
                   <div className={`border rounded-xl p-5 shadow-sm space-y-2 relative overflow-hidden ${
                     masterReport.netProfit >= 0 ? 'bg-indigo-950 text-white border-indigo-900' : 'bg-red-950 text-white border-red-900'
                   }`} id="box-netprofit">
                     <div className="flex items-center justify-between" id="row-netprofit">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-300">Net Profit Margin</span>
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-300">Net Profit</span>
                       <div className={`p-1 rounded text-xs font-bold ${
                         masterReport.netProfit >= 0 ? 'bg-indigo-800 text-indigo-200' : 'bg-red-800 text-red-200'
                       }`} id="badge-profit">
@@ -2426,9 +2860,9 @@ export default function App() {
                     <div className="text-2xl font-bold font-mono" id="val-netprofit">
                       ${masterReport.netProfit.toLocaleString('en-US', { minimumFractionDigits: 2 })}
                     </div>
-                    <div className="text-[10px] text-indigo-300 flex items-center gap-1">
-                      <DollarSign className="w-3.5 h-3.5" />
-                      Net profit = Revenue - COGS - Expenses.
+                    <div className="text-[9px] text-indigo-300 flex items-center gap-1">
+                      <DollarSign className="w-3 h-3" />
+                      Net profit = Rev - COGS - Expenses
                     </div>
                   </div>
                 )}
@@ -2449,12 +2883,13 @@ export default function App() {
                     </span>
                   </div>
 
+                   {user.role === 'Admin' &&
                   <div className="flex items-center justify-between py-2" id="inv-cap-row">
-                    <span className="text-sm font-semibold text-slate-700">Remaining Assets Capital Valuation</span>
+                    <span className="text-sm font-semibold text-slate-700">Toll Remaining Asset Value</span>
                     <span className="text-lg font-bold text-slate-950 font-mono">
                       ${masterReport?.inventoryAssetValue.toLocaleString('en-US', { minimumFractionDigits: 2 }) || '0.00'}
                     </span>
-                  </div>
+                  </div> }
 
                   <div className="space-y-2 border-t pt-3" id="inv-cap-spec">
                     <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">Warehouse Stock Splitting</span>
@@ -2484,8 +2919,7 @@ export default function App() {
                 {/* Seller performance rank charts */}
                 <div className="bg-white border border-slate-100 rounded-xl shadow-sm p-6 space-y-4" id="ranked-seller-performance-box">
                   <div className="border-b pb-3" id="seller-perf-header">
-                    <h4 className="font-bold text-slate-900 text-sm">Seller Performance rankings (Export Agents)</h4>
-                    <p className="text-[11px] text-slate-400">Tolls total export volume minus materials cost basis per seller logging account.</p>
+                    <h4 className="font-bold text-slate-900 text-sm">Seller Performance rankings</h4>
                   </div>
 
                   <div className="space-y-3" id="ranked-seller-container">
@@ -2580,6 +3014,495 @@ export default function App() {
             </div>
           )}
 
+
+          {/* TAB 6: LOAN MANAGEMENT PANEL (Finance/Admin) */}
+          {activeTab === 'loans' && (user.role === 'Admin' || user.role === 'Finance') && (
+            <div className="space-y-6 animate-fade-in" id="tab-loans-wrapper">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-100 pb-4" id="loans-header-box">
+                <div>
+                  <h1 className="text-2xl font-bold tracking-tight text-slate-950">Company & Client loan Records</h1>
+                  <p className="text-xs text-slate-500">Track raw materials taken as credit by clients and loans borrowed by our company.</p>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap" id="loans-header-actions">
+                  <button
+                    onClick={handlePrintLoans}
+                    className="flex items-center gap-1.5 p-2 bg-indigo-50 border border-indigo-200 hover:bg-indigo-100 text-indigo-700 hover:text-indigo-800 text-xs font-bold rounded-lg transition-all shadow-sm cursor-pointer"
+                    id="btn-print-loans-pdf"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    Print Client Loan Records
+                  </button>
+                  <button
+                    onClick={handlePrintCompanyLoans}
+                    className="flex items-center gap-1.5 p-2 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 text-emerald-700 hover:text-emerald-800 text-xs font-bold rounded-lg transition-all shadow-sm cursor-pointer"
+                    id="btn-print-company-loans-pdf"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    Print Company Loan Records
+                  </button>
+                </div>
+              </div>
+
+              {/* Loans summary cards row */}
+              {(() => {
+                const clientLoanTrxs = sales.filter(s => {
+                  if (user.role === 'Seller' && s.sellerId !== user.id) return false;
+                  if (s.paymentMethod !== 'Loan') return false;
+                  if (clientLoansStartDate && s.date < clientLoansStartDate) return false;
+                  if (clientLoansEndDate && s.date > clientLoansEndDate) return false;
+                  return true;
+                });
+                const totalClientLoans = clientLoanTrxs.reduce((sum, s) => sum + s.totalAmount, 0);
+                const totalClientRepaid = clientLoanTrxs.reduce((sum, s) => sum + (s.repaidAmount || 0), 0);
+                const clientOutstanding = totalClientLoans - totalClientRepaid;
+
+                const filteredCompanyLoansForKPI = companyLoans.filter(l => {
+                  if (companyLoansStartDate && l.date < companyLoansStartDate) return false;
+                  if (companyLoansEndDate && l.date > companyLoansEndDate) return false;
+                  return true;
+                });
+                const totalCompanyBorrowed = filteredCompanyLoansForKPI.reduce((sum, l) => sum + l.amount, 0);
+                const totalCompanyRepaid = filteredCompanyLoansForKPI.reduce((sum, l) => sum + (l.repaidAmount || 0), 0);
+                const companyOutstanding = totalCompanyBorrowed - totalCompanyRepaid;
+
+                return (
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4" id="loans-summary-boxes">
+                    {/* Client Loans Issued */}
+                    <div className="bg-white border border-slate-100 rounded-xl p-4 shadow-sm space-y-1 relative overflow-hidden" id="box-loans-issued">
+                      <div className="absolute top-0 left-0 w-full h-1 bg-indigo-500"></div>
+                      <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500 block">Total Client Loans (Receivable)</span>
+                      <div className="text-xl font-bold text-slate-900 font-mono">
+                        ${totalClientLoans.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                      </div>
+                      <p className="text-[9px] text-slate-400">Total credit lines extended to clients.</p>
+                    </div>
+
+                    {/* Client Loans Outstanding */}
+                    <div className="bg-white border border-slate-100 rounded-xl p-4 shadow-sm space-y-1 relative overflow-hidden">
+                      <div className="absolute top-0 left-0 w-full h-1 bg-amber-500"></div>
+                      <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500 block">Total Remaining Client Loan</span>
+                      <div className={`text-xl font-bold font-mono ${clientOutstanding > 0 ? 'text-amber-600' : 'text-slate-900'}`}>
+                        ${clientOutstanding.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                      </div>
+                      <p className="text-[9px] text-slate-400">Remaining receivable debt from sales.</p>
+                    </div>
+
+                    {/* Company Loans Borrowed */}
+                    <div className="bg-white border border-slate-100 rounded-xl p-4 shadow-sm space-y-1 relative overflow-hidden">
+                      <div className="absolute top-0 left-0 w-full h-1 bg-emerald-500"></div>
+                      <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500 block">Total Company Borrowed (Payable)</span>
+                      <div className="text-xl font-bold text-slate-900 font-mono">
+                        ${totalCompanyBorrowed.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                      </div>
+                      <p className="text-[9px] text-slate-400">Total capital borrowed from sources.</p>
+                    </div>
+
+                    {/* Company Outstanding Balance */}
+                    <div className="bg-white border border-slate-100 rounded-xl p-4 shadow-sm space-y-1 relative overflow-hidden">
+                      <div className="absolute top-0 left-0 w-full h-1 bg-rose-500"></div>
+                      <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500 block">Total Remaining Company loan</span>
+                      <div className={`text-xl font-bold font-mono ${companyOutstanding > 0 ? 'text-rose-600' : 'text-slate-900'}`}>
+                        ${companyOutstanding.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                      </div>
+                      <p className="text-[9px] text-slate-400">Remaining liability to corporate lenders.</p>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {/* Tables Column (2/3 width) */}
+                <div className="lg:col-span-2 space-y-6">
+                  
+                  {/* Table 1: Client Loans (Materials sold by loan) */}
+                  <div className="bg-white border border-slate-100 rounded-xl shadow-sm overflow-hidden" id="loans-table-container">
+                    <div className="p-4 border-b border-slate-100 bg-slate-50/50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                      <h3 className="font-bold text-slate-900 text-xs uppercase tracking-wide flex items-center gap-2">
+                        <Clock className="w-4 h-4 text-indigo-500" />
+                        Client Loans (Receivables)
+                      </h3>
+                      
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="flex items-center gap-1">
+                          <span className="text-[9px] uppercase font-bold text-slate-400">From</span>
+                          <input
+                            type="date"
+                            className="bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5 text-[10px] h-[26px]"
+                            value={clientLoansStartDate}
+                            onChange={(e) => setClientLoansStartDate(e.target.value)}
+                          />
+                          <span className="text-[9px] uppercase font-bold text-slate-400">To</span>
+                          <input
+                            type="date"
+                            className="bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5 text-[10px] h-[26px]"
+                            value={clientLoansEndDate}
+                            onChange={(e) => setClientLoansEndDate(e.target.value)}
+                          />
+                          {(clientLoansStartDate || clientLoansEndDate) && (
+                            <button
+                              onClick={() => { setClientLoansStartDate(''); setClientLoansEndDate(''); }}
+                              className="text-[9px] text-red-500 hover:underline font-semibold"
+                            >
+                              Clear
+                            </button>
+                          )}
+                        </div>
+                        <span className="text-[10px] bg-indigo-50 text-indigo-700 font-bold px-2 py-0.5 rounded-full uppercase tracking-wider font-mono">
+                          {sales.filter(s => {
+                            if (user.role === 'Seller' && s.sellerId !== user.id) return false;
+                            if (s.paymentMethod !== 'Loan') return false;
+                            if (clientLoansStartDate && s.date < clientLoansStartDate) return false;
+                            if (clientLoansEndDate && s.date > clientLoansEndDate) return false;
+                            return true;
+                          }).length} Records
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left border-collapse text-xs">
+                        <thead>
+                          <tr className="bg-slate-50 text-slate-500 font-bold border-b border-slate-100 uppercase text-[10px] tracking-wider font-sans">
+                            <th className="p-3">Client (Recipient)</th>
+                            <th className="p-3">Material Disbursed</th>
+                            <th className="p-3 text-right">Units</th>
+                            <th className="p-3 text-right">Loan Amount</th>
+                            <th className="p-3 text-right">Repaid Sum</th>
+                            <th className="p-3 text-right">Balance Due</th>
+                            <th className="p-3 text-center">Date</th>
+                            <th className="p-3 text-center">Controls</th>
+                            <th className="p-3 text-center">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {sales.filter(s => {
+                            if (user.role === 'Seller' && s.sellerId !== user.id) return false;
+                            if (s.paymentMethod !== 'Loan') return false;
+                            if (clientLoansStartDate && s.date < clientLoansStartDate) return false;
+                            if (clientLoansEndDate && s.date > clientLoansEndDate) return false;
+                            return true;
+                          }).map((s) => {
+                            const outstanding = s.totalAmount - (s.repaidAmount || 0);
+                            const isSettled = outstanding === 0;
+
+                            return (
+                              <tr key={s.id} className="hover:bg-slate-50/40 transition-colors">
+                                <td className="p-3 font-semibold text-slate-950">
+                                  {s.customerName}
+                                  <div className="text-[9px] font-normal text-slate-400">By: {s.seller?.name || `Agent #${s.sellerId}`}</div>
+                                </td>
+                                <td className="p-3">
+                                  <span className="font-semibold text-slate-800">{s.materialName || 'Uncoded Spec'}</span>
+                                  <div className="text-[9px] font-mono text-slate-500">{s.materialSku || 'N/A'}</div>
+                                </td>
+                                <td className="p-3 text-right font-mono text-slate-700 font-semibold">
+                                  {s.quantity.toLocaleString('en-US')}
+                                </td>
+                                <td className="p-3 text-right font-mono font-bold text-slate-900">
+                                  ${s.totalAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                                </td>
+                                <td className="p-3 text-right font-mono text-emerald-600 font-semibold">
+                                  ${(s.repaidAmount || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                                </td>
+                                <td className={`p-3 text-right font-mono font-bold ${isSettled ? 'text-slate-400 line-through' : 'text-rose-600'}`}>
+                                  ${outstanding.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                                </td>
+                                <td className="p-3 text-center font-mono text-slate-500 whitespace-nowrap">
+                                  {s.date}
+                                </td>
+                                <td className="p-3">
+                                  {!isSettled ? (
+                                    <div className="flex items-center justify-center gap-1">
+                                      <input
+                                        type="number"
+                                        placeholder="Amount"
+                                        step="0.01"
+                                        min="0.01"
+                                        max={outstanding}
+                                        value={repayInputs[s.id] || ''}
+                                        onChange={(e) => setRepayInputs(prev => ({ ...prev, [s.id]: e.target.value }))}
+                                        className="w-16 bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5 text-slate-800 text-[10px] font-mono focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                                      />
+                                      <button
+                                        onClick={() => handleRepayLoan(s.id, Number(repayInputs[s.id] || 0))}
+                                        className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-1.5 py-0.5 text-[9px] rounded uppercase tracking-wider cursor-pointer"
+                                      >
+                                        Repay
+                                      </button>
+                                      <button
+                                        onClick={() => handleRepayLoan(s.id, outstanding)}
+                                        className="bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 text-emerald-700 font-bold px-1.5 py-0.5 text-[9px] rounded uppercase tracking-wider cursor-pointer"
+                                        title="Settle fully"
+                                      >
+                                        Fully
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <span className="text-[10px] text-slate-400 italic flex justify-center">Settled</span>
+                                  )}
+                                </td>
+                                <td className="p-3">
+                                  <div className="inline-flex gap-1 justify-center w-full">
+                                    {(user.role === 'Admin' || user.role === 'Finance' || s.sellerId === user.id) && (
+                                      <>
+                                        <button
+                                          onClick={() => startEditSale(s)}
+                                          className="p-1 px-1.5 bg-slate-50 hover:bg-slate-100 text-blue-650 border border-slate-200 rounded text-[9px] font-semibold cursor-pointer"
+                                        >
+                                          Edit
+                                        </button>
+                                        {isSettled && (
+                                          <button
+                                            onClick={() => handleDeleteLoanOnly(s)}
+                                            className="p-1 text-red-650 hover:bg-red-50 border border-slate-200 rounded cursor-pointer h-5 w-5 flex items-center justify-center"
+                                            title="Remove Settled Loan from Registry"
+                                          >
+                                            <Trash2 className="w-3 h-3" />
+                                          </button>
+                                        )}
+                                      </>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+
+                          {sales.filter(s => {
+                            if (user.role === 'Seller' && s.sellerId !== user.id) return false;
+                            if (s.paymentMethod !== 'Loan') return false;
+                            if (clientLoansStartDate && s.date < clientLoansStartDate) return false;
+                            if (clientLoansEndDate && s.date > clientLoansEndDate) return false;
+                            return true;
+                          }).length === 0 && (
+                            <tr>
+                              <td colSpan={9} className="p-8 text-center text-slate-400 italic font-mono text-xs">
+                                No registered raw material client loans found for the selected date range.
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {/* Table 2: Company Loans (Money our company borrowed from different sources) */}
+                  <div className="bg-white border border-slate-100 rounded-xl shadow-sm overflow-hidden">
+                    <div className="p-4 border-b border-slate-100 bg-slate-50/50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                      <h3 className="font-bold text-slate-900 text-xs uppercase tracking-wide flex items-center gap-2">
+                        <Building2 className="w-4 h-4 text-emerald-500" />
+                        Company Loans (Payables)
+                      </h3>
+                      
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="flex items-center gap-1">
+                          <span className="text-[9px] uppercase font-bold text-slate-400">From</span>
+                          <input
+                            type="date"
+                            className="bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5 text-[10px] h-[26px]"
+                            value={companyLoansStartDate}
+                            onChange={(e) => setCompanyLoansStartDate(e.target.value)}
+                          />
+                          <span className="text-[9px] uppercase font-bold text-slate-400">To</span>
+                          <input
+                            type="date"
+                            className="bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5 text-[10px] h-[26px]"
+                            value={companyLoansEndDate}
+                            onChange={(e) => setCompanyLoansEndDate(e.target.value)}
+                          />
+                          {(companyLoansStartDate || companyLoansEndDate) && (
+                            <button
+                              onClick={() => { setCompanyLoansStartDate(''); setCompanyLoansEndDate(''); }}
+                              className="text-[9px] text-red-500 hover:underline font-semibold"
+                            >
+                              Clear
+                            </button>
+                          )}
+                        </div>
+                        <span className="text-[10px] bg-emerald-50 text-emerald-700 font-bold px-2 py-0.5 rounded-full uppercase tracking-wider font-mono">
+                          {companyLoans.filter(l => {
+                            if (companyLoansStartDate && l.date < companyLoansStartDate) return false;
+                            if (companyLoansEndDate && l.date > companyLoansEndDate) return false;
+                            return true;
+                          }).length} Records
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left border-collapse text-xs">
+                        <thead>
+                          <tr className="bg-slate-50 text-slate-500 font-bold border-b border-slate-100 uppercase text-[10px] tracking-wider font-sans">
+                            <th className="p-3">Lender (Source)</th>
+                            <th className="p-3 text-right">Amount Borrowed</th>
+                            <th className="p-3 text-right">Repaid Sum</th>
+                            <th className="p-3 text-right">Balance Due</th>
+                            <th className="p-3 text-center">Date Taken</th>
+                            <th className="p-3 text-center">Repayment Controls</th>
+                            <th className="p-3 text-center">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {companyLoans.filter(l => {
+                            if (companyLoansStartDate && l.date < companyLoansStartDate) return false;
+                            if (companyLoansEndDate && l.date > companyLoansEndDate) return false;
+                            return true;
+                          }).map((l) => {
+                            const outstanding = l.amount - (l.repaidAmount || 0);
+                            const isSettled = outstanding === 0;
+
+                            return (
+                              <tr key={l.id} className="hover:bg-slate-50/40 transition-colors">
+                                <td className="p-3 font-semibold text-slate-950">
+                                  {l.lender}
+                                </td>
+                                <td className="p-3 text-right font-mono font-bold text-slate-900">
+                                  ${l.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                                </td>
+                                <td className="p-3 text-right font-mono text-emerald-600 font-semibold">
+                                  ${(l.repaidAmount || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                                </td>
+                                <td className={`p-3 text-right font-mono font-bold ${isSettled ? 'text-slate-400 line-through' : 'text-rose-600'}`}>
+                                  ${outstanding.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                                </td>
+                                <td className="p-3 text-center font-mono text-slate-500 whitespace-nowrap">
+                                  {l.date}
+                                </td>
+                                <td className="p-3">
+                                  {!isSettled ? (
+                                    <div className="flex items-center justify-center gap-1">
+                                      <input
+                                        type="number"
+                                        placeholder="Amount"
+                                        step="0.01"
+                                        min="0.01"
+                                        max={outstanding}
+                                        value={repayAmounts[l.id] || ''}
+                                        onChange={(e) => setRepayAmounts(prev => ({ ...prev, [l.id]: e.target.value }))}
+                                        className="w-16 bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5 text-slate-800 text-[10px] font-mono focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+                                      />
+                                      <button
+                                        onClick={() => handleRepayCompanyLoan(l.id, Number(repayAmounts[l.id] || 0))}
+                                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-1.5 py-0.5 text-[9px] rounded uppercase tracking-wider cursor-pointer"
+                                      >
+                                        Repay
+                                      </button>
+                                      <button
+                                        onClick={() => handleRepayCompanyLoan(l.id, outstanding)}
+                                        className="bg-teal-50 border border-teal-200 hover:bg-teal-100 text-teal-700 font-bold px-1.5 py-0.5 text-[9px] rounded uppercase tracking-wider cursor-pointer"
+                                        title="Settle fully"
+                                      >
+                                        Fully
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <span className="text-[10px] text-slate-400 italic flex justify-center">Settled</span>
+                                  )}
+                                </td>
+                                <td className="p-3">
+                                  <div className="inline-flex gap-1 justify-center w-full">
+                                    <button
+                                      onClick={() => startEditCompanyLoan(l)}
+                                      className="p-1 px-1.5 bg-slate-50 hover:bg-slate-100 text-blue-650 border border-slate-200 rounded text-[9px] font-semibold cursor-pointer"
+                                    >
+                                      Edit
+                                    </button>
+                                    {isSettled && (
+                                      <button
+                                        onClick={() => handleDeleteCompanyLoan(l)}
+                                        className="p-1 text-red-650 hover:bg-red-50 border border-slate-200 rounded cursor-pointer h-5 w-5 flex items-center justify-center"
+                                        title="Delete Settled Company Loan Record"
+                                      >
+                                        <Trash2 className="w-3 h-3" />
+                                      </button>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+
+                          {companyLoans.filter(l => {
+                            if (companyLoansStartDate && l.date < companyLoansStartDate) return false;
+                            if (companyLoansEndDate && l.date > companyLoansEndDate) return false;
+                            return true;
+                          }).length === 0 && (
+                            <tr>
+                              <td colSpan={7} className="p-8 text-center text-slate-400 italic font-mono text-xs">
+                                No corporate company borrowings or loans found.
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                </div>
+
+                {/* Form Column (1/3 width) */}
+                <div className="space-y-6">
+                  <div className="bg-white border border-slate-100 rounded-xl shadow-sm p-5 space-y-4">
+                    <div className="border-b border-slate-100 pb-3">
+                      <h3 className="font-bold text-slate-900 text-xs uppercase tracking-wider flex items-center gap-1.5">
+                        <Plus className="w-4 h-4 text-emerald-500" />
+                        Record Company Loan
+                      </h3>
+                      <p className="text-[10px] text-slate-400 mt-0.5">Log new money borrowed from external lenders or banking sources.</p>
+                    </div>
+
+                    <form onSubmit={handleCreateCompanyLoan} className="space-y-4">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest block">Lender / Source *</label>
+                        <input
+                          type="text"
+                          required
+                          placeholder="e.g. Commercial Bank of Ethiopia"
+                          value={newLender}
+                          onChange={(e) => setNewLender(e.target.value)}
+                          className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none text-slate-800"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest block">Loan Amount (USD) *</label>
+                        <input
+                          type="number"
+                          required
+                          placeholder="0.00"
+                          step="any"
+                          value={newLoanAmount}
+                          onChange={(e) => setNewLoanAmount(e.target.value)}
+                          className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-mono focus:ring-1 focus:ring-emerald-500 focus:outline-none text-slate-800"
+                        />
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest block">Date Taken *</label>
+                        <input
+                          type="date"
+                          required
+                          value={newLoanDate}
+                          onChange={(e) => setNewLoanDate(e.target.value)}
+                          className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none text-slate-800"
+                        />
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={loadingAction}
+                        className="w-full bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold py-2 px-4 rounded-lg shadow-sm transition-all hover:shadow cursor-pointer flex items-center justify-center gap-1.5 uppercase tracking-wider"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        {loadingAction ? 'Recording...' : 'Record Company Loan'}
+                      </button>
+                    </form>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
         </main>
 
         {/* EDIT SALES EVENT MODAL */}
@@ -2594,76 +3517,107 @@ export default function App() {
                 <button onClick={() => setEditingSale(null)} className="text-slate-450 hover:text-slate-600 text-xs font-bold cursor-pointer">✕</button>
               </div>
               <form onSubmit={handleSaveSaleEdit} className="p-5 space-y-4">
-                <div className="space-y-1">
-                  <label className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest block">Recipient Client Name *</label>
-                  <input
-                    type="text"
-                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none text-slate-800"
-                    value={editCustomerName}
-                    onChange={(e) => setEditCustomerName(e.target.value)}
-                    required
-                  />
-                </div>
-                
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest block">Qty Sold *</label>
-                    <input
-                      type="number"
-                      className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-mono focus:ring-1 focus:ring-indigo-500 focus:outline-none text-slate-800"
-                      value={editQuantity}
-                      onChange={(e) => setEditQuantity(e.target.value)}
-                      required
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest block">Total (USD) *</label>
-                    <input
-                      type="number"
-                      step="any"
-                      className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-mono focus:ring-1 focus:ring-indigo-500 focus:outline-none text-slate-800"
-                      value={editTotalAmount}
-                      onChange={(e) => setEditTotalAmount(e.target.value)}
-                      required
-                    />
-                  </div>
-                </div>
+                {editingSale.paymentMethod === 'Loan' ? (
+                  <>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest block">Total Loan Amount (USD) *</label>
+                      <input
+                        type="number"
+                        step="any"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-mono focus:ring-1 focus:ring-indigo-500 focus:outline-none text-slate-800"
+                        value={editTotalAmount}
+                        onChange={(e) => setEditTotalAmount(e.target.value)}
+                        required
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest block">Repaid Sum (USD) *</label>
+                      <input
+                        type="number"
+                        step="any"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-mono focus:ring-1 focus:ring-indigo-500 focus:outline-none text-slate-800"
+                        value={editRepaidAmount}
+                        onChange={(e) => setEditRepaidAmount(e.target.value)}
+                        required
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest block">Recipient Client Name *</label>
+                      <input
+                        type="text"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none text-slate-800"
+                        value={editCustomerName}
+                        onChange={(e) => setEditCustomerName(e.target.value)}
+                        required
+                      />
+                    </div>
+                    
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest block">Qty Sold *</label>
+                        <input
+                          type="number"
+                          className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-mono focus:ring-1 focus:ring-indigo-500 focus:outline-none text-slate-800"
+                          value={editQuantity}
+                          onChange={(e) => setEditQuantity(e.target.value)}
+                          required
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest block">Total (USD) *</label>
+                        <input
+                          type="number"
+                          step="any"
+                          className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-mono focus:ring-1 focus:ring-indigo-500 focus:outline-none text-slate-800"
+                          value={editTotalAmount}
+                          onChange={(e) => setEditTotalAmount(e.target.value)}
+                          required
+                        />
+                      </div>
+                    </div>
 
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest block">Payment Basis *</label>
-                    <select
-                      className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none text-slate-800"
-                      value={editPaymentMethod}
-                      onChange={(e) => setEditPaymentMethod(e.target.value as 'Cash' | 'Transfer')}
-                    >
-                      <option value="Cash">Cash</option>
-                      <option value="Transfer">Transfer</option>
-                    </select>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest block">Invoice Date *</label>
-                    <input
-                      type="date"
-                      className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none text-slate-800"
-                      value={editDate}
-                      onChange={(e) => setEditDate(e.target.value)}
-                      required
-                    />
-                  </div>
-                </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest block">Payment Basis *</label>
+                        <select
+                          className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none text-slate-800"
+                          value={editPaymentMethod}
+                          onChange={(e) => setEditPaymentMethod(e.target.value as 'Cash' | 'Transfer' | 'Loan' | 'Paid Loan')}
+                        >
+                          <option value="Cash">Cash</option>
+                          <option value="Transfer">Transfer</option>
+                          <option value="Loan">Loan</option>
+                          <option value="Paid Loan">Paid Loan</option>
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest block">Invoice Date *</label>
+                        <input
+                          type="date"
+                          className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none text-slate-800"
+                          value={editDate}
+                          onChange={(e) => setEditDate(e.target.value)}
+                          required
+                        />
+                      </div>
+                    </div>
 
-                {editPaymentMethod === 'Transfer' && (
-                  <div className="space-y-1 animate-fade-in">
-                    <label className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest block">Ethiopian Transfer Bank *</label>
-                    <input
-                      type="text"
-                      className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none text-slate-800"
-                      value={editTransferBank}
-                      onChange={(e) => setEditTransferBank(e.target.value)}
-                      required
-                    />
-                  </div>
+                    {editPaymentMethod === 'Transfer' && (
+                      <div className="space-y-1 animate-fade-in">
+                        <label className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest block">Ethiopian Transfer Bank *</label>
+                        <input
+                          type="text"
+                          className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none text-slate-800"
+                          value={editTransferBank}
+                          onChange={(e) => setEditTransferBank(e.target.value)}
+                          required
+                        />
+                      </div>
+                    )}
+                  </>
                 )}
 
                 <div className="flex gap-2 justify-end pt-2 border-t border-slate-100">
@@ -2711,7 +3665,7 @@ export default function App() {
                 </div>
 
                 <div className="space-y-1">
-                  <label className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest block">Username *</label>
+                  <label className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest block">Username / Email *</label>
                   <input
                     type="text"
                     className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none text-slate-800"
@@ -2741,7 +3695,7 @@ export default function App() {
                       onChange={(e) => setEditUserRole(e.target.value as 'Admin' | 'Finance' | 'Seller')}
                     >
                       <option value="Admin">Admin</option>
-                      <option value="Finance">Finance Guy</option>
+                      <option value="Finance">Finance</option>
                       <option value="Seller">Seller</option>
                     </select>
                   </div>
@@ -2837,6 +3791,85 @@ export default function App() {
                     type="submit"
                     disabled={loadingAction}
                     className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg transition-all cursor-pointer font-sans"
+                  >
+                    {loadingAction ? 'Saving...' : 'Save Changes'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* EDIT COMPANY LOAN MODAL */}
+        {editingCompanyLoan && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-fade-in" id="edit-company-loan-modal">
+            <div className="bg-white border border-slate-100 rounded-xl shadow-xl w-full max-w-sm overflow-hidden" id="edit-company-loan-modal-content">
+              <div className="p-4 border-b border-slate-200 bg-slate-50 flex justify-between items-center">
+                <h3 className="font-bold text-slate-900 text-xs uppercase tracking-wide flex items-center gap-1.5">
+                  <span className="p-1 bg-emerald-50 text-emerald-700 rounded"><Building2 className="w-4 h-4 shrink-0" /></span>
+                  Edit Company Loan
+                </h3>
+                <button onClick={() => setEditingCompanyLoan(null)} className="text-slate-450 hover:text-slate-600 text-xs font-bold cursor-pointer">✕</button>
+              </div>
+              <form onSubmit={handleSaveCompanyLoanEdit} className="p-5 space-y-4">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest block">Lender / Source Name *</label>
+                  <input
+                    type="text"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none text-slate-800"
+                    value={editLender}
+                    onChange={(e) => setEditLender(e.target.value)}
+                    required
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest block">Total Loan Amount ($ USD) *</label>
+                  <input
+                    type="number"
+                    step="any"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-mono focus:ring-1 focus:ring-emerald-500 focus:outline-none text-slate-800"
+                    value={editLoanAmount}
+                    onChange={(e) => setEditLoanAmount(e.target.value)}
+                    required
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest block">Repaid Sum ($ USD) *</label>
+                  <input
+                    type="number"
+                    step="any"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-mono focus:ring-1 focus:ring-emerald-500 focus:outline-none text-slate-800"
+                    value={editLoanRepaidAmount}
+                    onChange={(e) => setEditLoanRepaidAmount(e.target.value)}
+                    required
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-semibold text-slate-600 uppercase tracking-widest block">Date Taken *</label>
+                  <input
+                    type="date"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:ring-1 focus:ring-emerald-500 focus:outline-none text-slate-800"
+                    value={editLoanDate}
+                    onChange={(e) => setEditLoanDate(e.target.value)}
+                    required
+                  />
+                </div>
+
+                <div className="flex gap-2 justify-end pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => setEditingCompanyLoan(null)}
+                    className="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg transition-colors cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={loadingAction}
+                    className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition-all cursor-pointer font-sans"
                   >
                     {loadingAction ? 'Saving...' : 'Save Changes'}
                   </button>
